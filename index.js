@@ -20,7 +20,7 @@ const { compileContract } = require('./controllers/compileController');
 const { checkFoundryInstallation } = require('./utils/foundryUtils');
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 9000; // Changed default from 3000 to 9000
 
 // Middleware
 app.use(cors());
@@ -30,12 +30,21 @@ app.use(bodyParser.json({ limit: '10mb' }));
 // Routes
 app.post('/solidity/compile', compileContract);
 
+// Basic health check route
+app.get('/health', (req, res) => {
+  res.status(200).json({
+    status: 'ok',
+    message: 'Solidity Compiler API is running'
+  });
+});
+
 // Error handler
 app.use((err, req, res, next) => {
   console.error('Internal server error:', err.stack);
   res.status(500).json({
     status: 'error',
-    message: 'Internal server error'
+    message: 'Internal server error',
+    error: err.message
   });
 });
 

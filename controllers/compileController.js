@@ -12,12 +12,14 @@ const {
   extractSolidityVersion, 
   installSolidityVersion,
   compileSolidityWithSolc,
-  compileSolidityWithStandardInput
+  compileSolidityWithStandardInput,
+  compileWithFallbackMethod
 } = require('../utils/solcUtils');
 const { 
   extractDependenciesFromCode, 
   installDependencies,
   handleOpenZeppelinManually,
+  handleProtocolDependenciesManually,
   preprocessImportPaths,
   copyRequiredFiles
 } = require('../utils/dependencyUtils');
@@ -83,6 +85,44 @@ async function compileWithFoundry(contractDir, contractName, outputDir, dependen
       content = content.replace(
         /import\s+["']@openzeppelin\/contracts@[^\/]+\/([^"']+)["']/g,
         'import "@openzeppelin/contracts/$1"'
+      );
+      
+      // Fix Uniswap V2 imports
+      content = content.replace(
+        /import\s+["']@uniswap\/v2-core\/([^"']+)["']/g,
+        'import "@uniswap/v2-core/$1"'
+      );
+      content = content.replace(
+        /import\s+["']@uniswap\/v2-periphery\/([^"']+)["']/g,
+        'import "@uniswap/v2-periphery/$1"'
+      );
+      
+      // Fix Uniswap V3 imports
+      content = content.replace(
+        /import\s+["']@uniswap\/v3-core\/([^"']+)["']/g,
+        'import "@uniswap/v3-core/$1"'
+      );
+      content = content.replace(
+        /import\s+["']@uniswap\/v3-periphery\/([^"']+)["']/g,
+        'import "@uniswap/v3-periphery/$1"'
+      );
+      
+      // Fix Aave imports
+      content = content.replace(
+        /import\s+["']@aave\/core-v3\/([^"']+)["']/g,
+        'import "@aave/core-v3/$1"'
+      );
+      
+      // Fix Compound imports
+      content = content.replace(
+        /import\s+["']@compound-finance\/contracts\/([^"']+)["']/g,
+        'import "@compound-finance/contracts/$1"'
+      );
+      
+      // Fix Chainlink imports
+      content = content.replace(
+        /import\s+["']@chainlink\/contracts\/([^"']+)["']/g,
+        'import "@chainlink/contracts/$1"'
       );
       
       fs.writeFileSync(filePath, content);
@@ -192,224 +232,3 @@ async function compileWithFoundry(contractDir, contractName, outputDir, dependen
     message: 'Contract compiled successfully with Foundry'
   };
 }
-
-/**
- * Main contract compilation controller
- * @param {Object} req - Express request object
- * @param {Object} res - Express response object
- */
-async function compileContract(req, res) {
-  const { code, evmVersion, compilerVersion, dependencies: userProvidedDeps } = req.body;
-  
-  if (!code) {
-    return res.status(400).json({ 
-      status: 'error', 
-      message: 'Solidity code is required' 
-    });
-  }
-
-  // Check if Foundry is properly installed
-  if (!checkFoundryInstallation()) {
-    return res.status(500).json({
-      status: 'error',
-      message: 'Foundry is not properly installed'
-    });
-  }
-
-  console.log('Received request to compile contract');
-  const contractId = Date.now().toString();
-  const contractDir = path.join(TEMP_DIR, contractId);
-  
-  // Preprocess the code to normalize import paths
-  const normalizedCode = preprocessImportPaths(code);
-  
-  // Extract the contract name from the code
-  const contractName = extractContractName(normalizedCode);
-  console.log(`Detected contract name: ${contractName}`);
-  
-  // Extract Solidity version from code if not specified
-  const detectedCompilerVersion = extractSolidityVersion(normalizedCode);
-  const effectiveCompilerVersion = compilerVersion || detectedCompilerVersion;
-  if (effectiveCompilerVersion) {
-    console.log(`Detected Solidity version: ${effectiveCompilerVersion}`);
-  }
-  
-  // Analyze code for dependencies
-  const detectedDependencies = extractDependenciesFromCode(normalizedCode);
-  console.log('Detected dependencies:', detectedDependencies);
-  
-  // Filter and normalize user-provided dependencies
-  const normalizedUserDeps = (userProvidedDeps || []).filter(dep => {
-    // Only use dependencies in the format 'owner/repo' or 'owner/repo@version'
-    return typeof dep === 'string' && (/^[^\/]+\/[^\/]+$/.test(dep) || /^[^\/]+\/[^\/]+@[\w\.\-]+$/.test(dep));
-  });
-  
-  // Combine user-provided and detected dependencies, removing duplicates
-  const allDependencies = [...new Set([
-    ...normalizedUserDeps, 
-    ...detectedDependencies
-  ])];
-  
-  console.log('All dependencies to install:', allDependencies);
-  
-  const contractFileName = `${contractName}.sol`;
-  const contractPath = path.join(contractDir, contractFileName);
-  
-  // Create the output directory for artifacts
-  const outputDir = path.join(ARTIFACTS_DIR, contractId);
-  fs.ensureDirSync(outputDir);
-  
-  try {
-    // Create folder
-    fs.ensureDirSync(contractDir);
-    fs.writeFileSync(contractPath, normalizedCode);
-    console.log(`Contract file created at: ${contractPath}`);
-    
-    // Make sure required files exist
-    await copyRequiredFiles(contractDir, normalizedCode);
-    
-    // Check and install required Solidity version if specified
-    if (effectiveCompilerVersion) {
-      console.log(`Checking for compiler version ${effectiveCompilerVersion}`);
-      await installSolidityVersion(effectiveCompilerVersion);
-    }
-    
-    // Try to compile using solc directly first (simpler approach)
-    try {
-      console.log('Attempting direct compilation with solc...');
-      const { bytecode, abi } = compileSolidityWithSolc(contractPath, contractName, effectiveCompilerVersion);
-      
-      // Save the compilation output
-      fs.writeFileSync(
-        path.join(outputDir, `${contractName}.json`),
-        JSON.stringify({ bytecode, abi }, null, 2)
-      );
-      
-      console.log('Contract compiled successfully with solc');
-      
-      return res.status(200).json({
-        status: 'success',
-        contractId,
-        contractName,
-        bytecode,
-        abi,
-        compilerVersion: effectiveCompilerVersion || 'default',
-        evmVersion: evmVersion || 'default',
-        dependencies: [],
-        message: 'Contract compiled successfully with solc'
-      });
-    } catch (solcError) {
-      console.error('Direct solc compilation failed:', solcError.message);
-      console.log('Falling back to Foundry compilation...');
-      
-      // If solc compilation fails, try with Foundry
-      
-      // Create a simpler structure without depending on forge-std
-      const srcDir = path.join(contractDir, 'src');
-      fs.ensureDirSync(srcDir);
-      fs.copyFileSync(contractPath, path.join(srcDir, contractFileName));
-      
-      // Create foundry.toml config file
-      createFoundryConfig(contractDir, allDependencies, evmVersion, effectiveCompilerVersion);
-      
-      // Create lib directory and initialize git before installing dependencies
-      fs.ensureDirSync(path.join(contractDir, 'lib'));
-      
-      // Initialize git repository (required for forge install)
-      try {
-        execSync('git init', { cwd: contractDir, stdio: 'pipe' });
-        console.log('Git repository initialized for dependency installation');
-      } catch (gitError) {
-        console.warn('Failed to initialize git repository:', gitError.message);
-      }
-      
-      // Install dependencies
-      const dependencyResults = await installDependencies(contractDir, allDependencies);
-      
-      // Additional manual handling for OpenZeppelin if installation failed
-      const installedDeps = await handleOpenZeppelinManually(contractDir, allDependencies, dependencyResults);
-      
-      // Verify dependencies are correctly installed
-      verifyDependencyInstallation(contractDir, allDependencies);
-      
-      // Run forge build
-      try {
-        const compileResult = await compileWithFoundry(
-          contractDir, 
-          contractName, 
-          outputDir, 
-          installedDeps, 
-          effectiveCompilerVersion, 
-          evmVersion
-        );
-        
-        return res.status(200).json({
-          status: 'success',
-          contractId,
-          contractName,
-          bytecode: compileResult.bytecode,
-          abi: compileResult.abi,
-          compilerVersion: effectiveCompilerVersion || 'default',
-          evmVersion: evmVersion || 'default',
-          dependencies: installedDeps,
-          message: 'Contract compiled successfully with Foundry'
-        });
-      } catch (forgeError) {
-        console.error('Forge build failed:', forgeError.message);
-        
-        // Try fallback to direct solc standard input (last resort)
-        try {
-          const { bytecode, abi } = compileSolidityWithStandardInput(
-            contractDir, 
-            contractFileName, 
-            contractName, 
-            normalizedCode, 
-            evmVersion
-          );
-          
-          // Save artifact
-          fs.writeFileSync(
-            path.join(outputDir, `${contractName}.json`),
-            JSON.stringify({ bytecode, abi }, null, 2)
-          );
-          
-          return res.status(200).json({
-            status: 'success',
-            contractId,
-            contractName,
-            bytecode,
-            abi,
-            compilerVersion: effectiveCompilerVersion || 'default',
-            evmVersion: evmVersion || 'default',
-            dependencies: dependencyResults ? installedDeps : [],
-            message: 'Contract compiled successfully with solc standard input'
-          });
-        } catch (standardInputError) {
-          console.error('Solc standard input compilation failed:', standardInputError.message);
-          
-          return res.status(400).json({
-            status: 'error',
-            message: `All compilation methods failed. Last error: ${standardInputError.message}`
-          });
-        }
-      }
-    }
-  } catch (error) {
-    console.error('An error occurred during compilation:', error);
-    
-    cleanupFolders(contractDir);
-    
-    return res.status(500).json({
-      status: 'error',
-      message: error.message || 'An error occurred during compilation'
-    });
-  } finally {
-    // Optional: Clean up regardless of success or failure
-    // Uncomment if you want to clean up after each request
-    // cleanupFolders(contractDir);
-  }
-}
-
-module.exports = {
-  compileContract
-};

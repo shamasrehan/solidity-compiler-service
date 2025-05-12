@@ -19,12 +19,23 @@
     "axios": "^1.6.0",
     "dotenv": "^16.3.1",
     "cors": "^2.8.5",
-    "morgan": "^1.10.0"
+    "morgan": "^1.10.0",
+    "os": "^0.1.2"
   },
   "devDependencies": {
     "nodemon": "^3.0.1",
     "mocha": "^10.2.0",
     "chai": "^4.3.7",
     "supertest": "^6.3.3"
+  },
+  "optionalDependencies": {
+    "@openzeppelin/contracts": "^4.9.3",
+    "@uniswap/v2-core": "^1.0.1",
+    "@uniswap/v2-periphery": "^1.1.0",
+    "@uniswap/v3-core": "^1.0.1",
+    "@uniswap/v3-periphery": "^1.4.3",
+    "solmate": "^6.7.0",
+    "solady": "^0.0.123",
+    "@chainlink/contracts": "^0.8.0"
   }
 }

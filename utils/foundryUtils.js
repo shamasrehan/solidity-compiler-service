@@ -78,40 +78,107 @@ function createFoundryConfig(contractDir, dependencies, evmVersion, compilerVers
   // Add remappings directly in foundry.toml
   foundryConfig += `remappings = [\n`;
   
-  // Explicitly set remapping paths in the config
-  if (dependencies.some(dep => dep.startsWith('OpenZeppelin/openzeppelin-contracts'))) {
-    // More explicit remappings with proper path separators
-    foundryConfig += `  '@openzeppelin/=lib/openzeppelin-contracts/',\n`;
-    foundryConfig += `  '@openzeppelin/contracts/=lib/openzeppelin-contracts/contracts/',\n`;
-    
-    // Add explicit remappings for common modules
-    foundryConfig += `  '@openzeppelin/contracts/utils/=lib/openzeppelin-contracts/contracts/utils/',\n`;
-    foundryConfig += `  '@openzeppelin/contracts/token/=lib/openzeppelin-contracts/contracts/token/',\n`;
-    foundryConfig += `  '@openzeppelin/contracts/access/=lib/openzeppelin-contracts/contracts/access/',\n`;
-    foundryConfig += `  '@openzeppelin/contracts/security/=lib/openzeppelin-contracts/contracts/security/',\n`;
-  }
+  // Map of dependency patterns to remapping configurations
+  const remappingConfigs = [
+    // OpenZeppelin
+    {
+      pattern: dep => dep.startsWith('OpenZeppelin/openzeppelin-contracts'),
+      remappings: [
+        '@openzeppelin/=lib/openzeppelin-contracts/',
+        '@openzeppelin/contracts/=lib/openzeppelin-contracts/contracts/',
+        '@openzeppelin/contracts/utils/=lib/openzeppelin-contracts/contracts/utils/',
+        '@openzeppelin/contracts/token/=lib/openzeppelin-contracts/contracts/token/',
+        '@openzeppelin/contracts/access/=lib/openzeppelin-contracts/contracts/access/',
+        '@openzeppelin/contracts/security/=lib/openzeppelin-contracts/contracts/security/',
+      ]
+    },
+    {
+      pattern: dep => dep.startsWith('OpenZeppelin/openzeppelin-contracts-upgradeable'),
+      remappings: [
+        '@openzeppelin/contracts-upgradeable/=lib/openzeppelin-contracts-upgradeable/contracts/',
+      ]
+    },
+    // Uniswap V2
+    {
+      pattern: dep => dep.startsWith('Uniswap/v2-core'),
+      remappings: [
+        '@uniswap/v2-core/=lib/v2-core/',
+        '@uniswap/v2-core/contracts/=lib/v2-core/contracts/',
+        '@uniswap/v2-core/interfaces/=lib/v2-core/interfaces/',
+      ]
+    },
+    {
+      pattern: dep => dep.startsWith('Uniswap/v2-periphery'),
+      remappings: [
+        '@uniswap/v2-periphery/=lib/v2-periphery/',
+        '@uniswap/v2-periphery/contracts/=lib/v2-periphery/contracts/',
+        '@uniswap/v2-periphery/interfaces/=lib/v2-periphery/interfaces/',
+      ]
+    },
+    // Uniswap V3
+    {
+      pattern: dep => dep.startsWith('Uniswap/v3-core'),
+      remappings: [
+        '@uniswap/v3-core/=lib/v3-core/',
+        '@uniswap/v3-core/contracts/=lib/v3-core/contracts/',
+        '@uniswap/v3-core/interfaces/=lib/v3-core/interfaces/',
+      ]
+    },
+    {
+      pattern: dep => dep.startsWith('Uniswap/v3-periphery'),
+      remappings: [
+        '@uniswap/v3-periphery/=lib/v3-periphery/',
+        '@uniswap/v3-periphery/contracts/=lib/v3-periphery/contracts/',
+        '@uniswap/v3-periphery/interfaces/=lib/v3-periphery/interfaces/',
+      ]
+    },
+    // Solidity Libraries
+    {
+      pattern: dep => dep.startsWith('transmissions11/solmate'),
+      remappings: [
+        'solmate/=lib/solmate/src/',
+      ]
+    },
+    {
+      pattern: dep => dep.startsWith('vectorized/solady'),
+      remappings: [
+        'solady/=lib/solady/src/',
+      ]
+    },
+    // Aave
+    {
+      pattern: dep => dep.startsWith('aave/aave-v3-core'),
+      remappings: [
+        '@aave/core-v3/=lib/aave-v3-core/',
+        '@aave/core-v3/contracts/=lib/aave-v3-core/contracts/',
+      ]
+    },
+    // Compound
+    {
+      pattern: dep => dep.startsWith('compound-finance/compound-protocol'),
+      remappings: [
+        'compound-protocol/=lib/compound-protocol/',
+        'compound-protocol/contracts/=lib/compound-protocol/contracts/',
+        '@compound-finance/contracts/=lib/compound-protocol/contracts/',
+      ]
+    },
+    // Chainlink
+    {
+      pattern: dep => dep.startsWith('smartcontractkit/chainlink'),
+      remappings: [
+        '@chainlink/contracts/=lib/chainlink/contracts/',
+        '@chainlink/=lib/chainlink/',
+      ]
+    },
+  ];
   
-  // Track versioned dependencies to add specific remappings
-  const versionedDeps = new Map();
-  dependencies.forEach(dep => {
-    if (dep.includes('@')) {
-      const [repo, version] = dep.split('@');
-      versionedDeps.set(repo, version);
+  // Add remappings based on dependencies
+  for (const config of remappingConfigs) {
+    if (dependencies.some(config.pattern)) {
+      for (const remapping of config.remappings) {
+        foundryConfig += `  '${remapping}',\n`;
+      }
     }
-  });
-  
-  // Add standard remappings for OpenZeppelin contracts
-  if (dependencies.some(dep => dep.startsWith('OpenZeppelin/openzeppelin-contracts-upgradeable'))) {
-    foundryConfig += `  '@openzeppelin/contracts-upgradeable/=lib/openzeppelin-contracts-upgradeable/contracts/',\n`;
-  }
-  
-  // Add remappings for other common libraries
-  if (dependencies.some(dep => dep.startsWith('transmissions11/solmate'))) {
-    foundryConfig += `  'solmate/=lib/solmate/src/',\n`;
-  }
-  
-  if (dependencies.some(dep => dep.startsWith('vectorized/solady'))) {
-    foundryConfig += `  'solady/=lib/solady/src/',\n`;
   }
   
   foundryConfig += `]\n`;
@@ -123,6 +190,15 @@ function createFoundryConfig(contractDir, dependencies, evmVersion, compilerVers
   if (compilerVersion) {
     foundryConfig += `solc_version = "${compilerVersion}"\n`;
   }
+  
+  // Add optimizer settings
+  foundryConfig += `[profile.default.optimizer]\n`;
+  foundryConfig += `enabled = true\n`;
+  foundryConfig += `runs = 200\n`;
+  
+  // Add any extra settings that might help with compilation
+  foundryConfig += `[profile.default.model_checker]\n`;
+  foundryConfig += `contracts = { 'src/${extractFilenameFromDependencies(dependencies)}' = [] }\n`;
   
   fs.writeFileSync(path.join(contractDir, 'foundry.toml'), foundryConfig);
   console.log('foundry.toml config file created');
@@ -138,43 +214,113 @@ function createRemappingsFile(contractDir, dependencies) {
     console.log('Creating manual remappings...');
     let remappingsContent = '';
     
-    // Add common remappings for known libraries
-    if (dependencies.some(dep => dep.startsWith('OpenZeppelin/openzeppelin-contracts'))) {
-      // More explicit remappings to handle different import paths
-      remappingsContent += '@openzeppelin/=lib/openzeppelin-contracts/\n';
-      remappingsContent += '@openzeppelin/contracts/=lib/openzeppelin-contracts/contracts/\n';
-      
-      // Add direct path remappings for common imports that might be causing issues
-      remappingsContent += '@openzeppelin/contracts/utils/=lib/openzeppelin-contracts/contracts/utils/\n';
-      remappingsContent += '@openzeppelin/contracts/token/=lib/openzeppelin-contracts/contracts/token/\n';
-      remappingsContent += '@openzeppelin/contracts/access/=lib/openzeppelin-contracts/contracts/access/\n';
-      remappingsContent += '@openzeppelin/contracts/security/=lib/openzeppelin-contracts/contracts/security/\n';
-      
-      // Also ensure absolute paths are correctly mapped
-      const absoluteContractPath = path.resolve(contractDir, 'lib/openzeppelin-contracts/contracts');
-      remappingsContent += `@openzeppelin/contracts/=${absoluteContractPath}/\n`;
-      
-      // Ensure the lib directory exists
-      if (fs.existsSync(path.join(contractDir, 'lib/openzeppelin-contracts'))) {
-        console.log('OpenZeppelin contracts found in lib directory');
-      } else {
-        console.log('Creating directory structure for OpenZeppelin...');
-        // Try to create a directory structure for OpenZeppelin manually
-        fs.ensureDirSync(path.join(contractDir, 'lib/openzeppelin-contracts/contracts'));
+    // Map of dependency patterns to remapping configurations
+    const remappingConfigs = [
+      // OpenZeppelin
+      {
+        pattern: dep => dep.startsWith('OpenZeppelin/openzeppelin-contracts'),
+        remappings: [
+          '@openzeppelin/=lib/openzeppelin-contracts/',
+          '@openzeppelin/contracts/=lib/openzeppelin-contracts/contracts/',
+          '@openzeppelin/contracts/utils/=lib/openzeppelin-contracts/contracts/utils/',
+          '@openzeppelin/contracts/token/=lib/openzeppelin-contracts/contracts/token/',
+          '@openzeppelin/contracts/access/=lib/openzeppelin-contracts/contracts/access/',
+          '@openzeppelin/contracts/security/=lib/openzeppelin-contracts/contracts/security/',
+        ]
+      },
+      {
+        pattern: dep => dep.startsWith('OpenZeppelin/openzeppelin-contracts-upgradeable'),
+        remappings: [
+          '@openzeppelin/contracts-upgradeable/=lib/openzeppelin-contracts-upgradeable/contracts/',
+        ]
+      },
+      // Uniswap V2
+      {
+        pattern: dep => dep.startsWith('Uniswap/v2-core'),
+        remappings: [
+          '@uniswap/v2-core/=lib/v2-core/',
+          '@uniswap/v2-core/contracts/=lib/v2-core/contracts/',
+          '@uniswap/v2-core/interfaces/=lib/v2-core/interfaces/',
+        ]
+      },
+      {
+        pattern: dep => dep.startsWith('Uniswap/v2-periphery'),
+        remappings: [
+          '@uniswap/v2-periphery/=lib/v2-periphery/',
+          '@uniswap/v2-periphery/contracts/=lib/v2-periphery/contracts/',
+          '@uniswap/v2-periphery/interfaces/=lib/v2-periphery/interfaces/',
+        ]
+      },
+      // Uniswap V3
+      {
+        pattern: dep => dep.startsWith('Uniswap/v3-core'),
+        remappings: [
+          '@uniswap/v3-core/=lib/v3-core/',
+          '@uniswap/v3-core/contracts/=lib/v3-core/contracts/',
+          '@uniswap/v3-core/interfaces/=lib/v3-core/interfaces/',
+        ]
+      },
+      {
+        pattern: dep => dep.startsWith('Uniswap/v3-periphery'),
+        remappings: [
+          '@uniswap/v3-periphery/=lib/v3-periphery/',
+          '@uniswap/v3-periphery/contracts/=lib/v3-periphery/contracts/',
+          '@uniswap/v3-periphery/interfaces/=lib/v3-periphery/interfaces/',
+        ]
+      },
+      // Solidity Libraries
+      {
+        pattern: dep => dep.startsWith('transmissions11/solmate'),
+        remappings: [
+          'solmate/=lib/solmate/src/',
+        ]
+      },
+      {
+        pattern: dep => dep.startsWith('vectorized/solady'),
+        remappings: [
+          'solady/=lib/solady/src/',
+        ]
+      },
+      // Aave
+      {
+        pattern: dep => dep.startsWith('aave/aave-v3-core'),
+        remappings: [
+          '@aave/core-v3/=lib/aave-v3-core/',
+          '@aave/core-v3/contracts/=lib/aave-v3-core/contracts/',
+        ]
+      },
+      // Compound
+      {
+        pattern: dep => dep.startsWith('compound-finance/compound-protocol'),
+        remappings: [
+          'compound-protocol/=lib/compound-protocol/',
+          'compound-protocol/contracts/=lib/compound-protocol/contracts/',
+          '@compound-finance/contracts/=lib/compound-protocol/contracts/',
+        ]
+      },
+      // Chainlink
+      {
+        pattern: dep => dep.startsWith('smartcontractkit/chainlink'),
+        remappings: [
+          '@chainlink/contracts/=lib/chainlink/contracts/',
+          '@chainlink/=lib/chainlink/',
+        ]
+      },
+    ];
+    
+    // Add remappings based on dependencies
+    for (const config of remappingConfigs) {
+      if (dependencies.some(config.pattern)) {
+        for (const remapping of config.remappings) {
+          remappingsContent += `${remapping}\n`;
+        }
       }
     }
     
-    if (dependencies.some(dep => dep.startsWith('OpenZeppelin/openzeppelin-contracts-upgradeable'))) {
-      remappingsContent += '@openzeppelin/contracts-upgradeable/=lib/openzeppelin-contracts-upgradeable/contracts/\n';
-    }
-    
-    // Add common remappings for other popular libraries
-    if (dependencies.some(dep => dep.startsWith('transmissions11/solmate'))) {
-      remappingsContent += 'solmate/=lib/solmate/src/\n';
-    }
-    
-    if (dependencies.some(dep => dep.startsWith('vectorized/solady'))) {
-      remappingsContent += 'solady/=lib/solady/src/\n';
+    // Add absolute paths for OpenZeppelin if needed
+    if (dependencies.some(dep => dep.startsWith('OpenZeppelin/openzeppelin-contracts'))) {
+      const absoluteContractPath = path.resolve(contractDir, 'lib/openzeppelin-contracts/contracts');
+      remappingsContent += `@openzeppelin/contracts/=${absoluteContractPath}/\n`;
     }
     
     // Add any other remappings from forge
@@ -204,6 +350,16 @@ function createRemappingsFile(contractDir, dependencies) {
 }
 
 /**
+ * Extract the filename from the dependencies array (helper function)
+ * @param {string[]} dependencies - Dependencies array
+ * @returns {string} A filename or default
+ */
+function extractFilenameFromDependencies(dependencies) {
+  // This is just a helper to get a reasonable filename for model checker config
+  return 'Contract.sol';
+}
+
+/**
  * Verify and fix dependency installation
  * @param {string} contractDir - Contract directory
  * @param {string[]} dependencies - List of dependencies
@@ -212,36 +368,98 @@ function verifyDependencyInstallation(contractDir, dependencies) {
   try {
     console.log('Verifying dependency installation...');
     
-    // Check if key OpenZeppelin files exist
-    if (dependencies.some(dep => dep.startsWith('OpenZeppelin/openzeppelin-contracts'))) {
-      const contractsDir = path.join(contractDir, 'lib/openzeppelin-contracts/contracts');
-      const utilsDir = path.join(contractsDir, 'utils');
-      const tokenDir = path.join(contractsDir, 'token');
-      const accessDir = path.join(contractsDir, 'access');
-      
-      if (!fs.existsSync(contractsDir)) {
-        console.error('OpenZeppelin contracts directory not found');
-        // Try to recreate the directory structure
-        fs.ensureDirSync(contractsDir);
-        fs.ensureDirSync(utilsDir);
-        fs.ensureDirSync(tokenDir);
-        fs.ensureDirSync(accessDir);
-        
-        console.log('Created OpenZeppelin directory structure, but files may be missing');
-        return false;
+    // Define critical directories for various protocols
+    const criticalDirectories = [
+      // OpenZeppelin
+      {
+        pattern: dep => dep.startsWith('OpenZeppelin/openzeppelin-contracts'),
+        dirs: [
+          'lib/openzeppelin-contracts/contracts',
+          'lib/openzeppelin-contracts/contracts/utils',
+          'lib/openzeppelin-contracts/contracts/token',
+          'lib/openzeppelin-contracts/contracts/access',
+          'lib/openzeppelin-contracts/contracts/security'
+        ]
+      },
+      // Uniswap V2
+      {
+        pattern: dep => dep.startsWith('Uniswap/v2-core'),
+        dirs: [
+          'lib/v2-core/contracts',
+          'lib/v2-core/interfaces'
+        ]
+      },
+      {
+        pattern: dep => dep.startsWith('Uniswap/v2-periphery'),
+        dirs: [
+          'lib/v2-periphery/contracts',
+          'lib/v2-periphery/interfaces'
+        ]
+      },
+      // Uniswap V3
+      {
+        pattern: dep => dep.startsWith('Uniswap/v3-core'),
+        dirs: [
+          'lib/v3-core/contracts',
+          'lib/v3-core/interfaces'
+        ]
+      },
+      {
+        pattern: dep => dep.startsWith('Uniswap/v3-periphery'),
+        dirs: [
+          'lib/v3-periphery/contracts',
+          'lib/v3-periphery/interfaces'
+        ]
+      },
+      // Aave
+      {
+        pattern: dep => dep.startsWith('aave/aave-v3-core'),
+        dirs: [
+          'lib/aave-v3-core/contracts',
+          'lib/aave-v3-core/interfaces'
+        ]
+      },
+      // Compound
+      {
+        pattern: dep => dep.startsWith('compound-finance/compound-protocol'),
+        dirs: [
+          'lib/compound-protocol/contracts'
+        ]
+      },
+      // Solmate
+      {
+        pattern: dep => dep.startsWith('transmissions11/solmate'),
+        dirs: [
+          'lib/solmate/src'
+        ]
+      },
+      // Solady
+      {
+        pattern: dep => dep.startsWith('vectorized/solady'),
+        dirs: [
+          'lib/solady/src'
+        ]
+      },
+      // Chainlink
+      {
+        pattern: dep => dep.startsWith('smartcontractkit/chainlink'),
+        dirs: [
+          'lib/chainlink/contracts',
+          'lib/chainlink/interfaces'
+        ]
       }
-      
-      // Check specific files that might be commonly imported
-      const criticalFiles = [
-        path.join(utilsDir, 'Counters.sol'),
-        path.join(tokenDir, 'ERC20/ERC20.sol'),
-        path.join(tokenDir, 'ERC721/extensions/ERC721URIStorage.sol'),
-        path.join(accessDir, 'Ownable.sol')
-      ];
-      
-      for (const file of criticalFiles) {
-        if (!fs.existsSync(file)) {
-          console.warn(`Critical file missing: ${file}`);
+    ];
+    
+    // Check each protocol that's in dependencies
+    for (const { pattern, dirs } of criticalDirectories) {
+      if (dependencies.some(pattern)) {
+        for (const dirPath of dirs) {
+          const fullPath = path.join(contractDir, dirPath);
+          if (!fs.existsSync(fullPath)) {
+            console.warn(`Critical directory missing: ${fullPath}`);
+            fs.ensureDirSync(fullPath);
+            console.log(`Created directory: ${fullPath}`);
+          }
         }
       }
     }

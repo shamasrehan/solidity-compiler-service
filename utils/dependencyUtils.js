@@ -29,13 +29,39 @@ function extractDependenciesFromCode(code) {
     /import\s+["']([^\.\/][^"'@]+)(?:@([^\/]+))?\/.*["']/g
   ];
   
-  // Map of import patterns to actual forge install repositories
+  // Expanded map of import patterns to actual forge install repositories
   const dependencyMap = {
+    // OpenZeppelin
     '@openzeppelin/contracts': 'OpenZeppelin/openzeppelin-contracts',
     '@openzeppelin/contracts-upgradeable': 'OpenZeppelin/openzeppelin-contracts-upgradeable',
+    
+    // Solidity libraries
     'solmate': 'transmissions11/solmate',
     'solady': 'vectorized/solady',
-    'forge-std': 'foundry-rs/forge-std'
+    'forge-std': 'foundry-rs/forge-std',
+    
+    // Uniswap
+    '@uniswap/v2-core': 'Uniswap/v2-core',
+    '@uniswap/v2-periphery': 'Uniswap/v2-periphery',
+    '@uniswap/v3-core': 'Uniswap/v3-core',
+    '@uniswap/v3-periphery': 'Uniswap/v3-periphery',
+    '@uniswap/lib': 'Uniswap/solidity-lib',
+    
+    // Aave
+    '@aave/core-v3': 'aave/aave-v3-core',
+    '@aave/periphery-v3': 'aave/aave-v3-periphery',
+    
+    // Compound
+    '@compound-finance/contracts': 'compound-finance/compound-protocol',
+    'compound-protocol': 'compound-finance/compound-protocol',
+    
+    // Chainlink
+    '@chainlink/contracts': 'smartcontractkit/chainlink',
+    
+    // ERC standards
+    '@openzeppelin/contracts/token/ERC20': 'OpenZeppelin/openzeppelin-contracts',
+    '@openzeppelin/contracts/token/ERC721': 'OpenZeppelin/openzeppelin-contracts',
+    '@openzeppelin/contracts/token/ERC1155': 'OpenZeppelin/openzeppelin-contracts',
   };
   
   // Process each line to find imports
@@ -100,28 +126,38 @@ function extractDependenciesFromCode(code) {
     }
   }
   
-  // Look for specific patterns indicating common libraries
-  if (code.includes('@openzeppelin') || code.includes('OpenZeppelin')) {
-    if (!dependencies.has('OpenZeppelin/openzeppelin-contracts')) {
-      dependencies.add('OpenZeppelin/openzeppelin-contracts');
-    }
-  }
+  // Check for specific patterns indicating common libraries and protocols
+  const patterns = [
+    // OpenZeppelin
+    { pattern: /@openzeppelin|OpenZeppelin/, deps: ['OpenZeppelin/openzeppelin-contracts'] },
+    { pattern: /contracts-upgradeable|UpgradeableBeacon/, deps: ['OpenZeppelin/openzeppelin-contracts-upgradeable'] },
+    
+    // Libraries
+    { pattern: /solmate|Solmate/, deps: ['transmissions11/solmate'] },
+    { pattern: /solady|Solady/, deps: ['vectorized/solady'] },
+    
+    // Uniswap
+    { pattern: /IUniswapV2Factory|IUniswapV2Pair|IUniswapV2Router/, deps: ['Uniswap/v2-core', 'Uniswap/v2-periphery'] },
+    { pattern: /IUniswapV3Factory|IUniswapV3Pool|ISwapRouter/, deps: ['Uniswap/v3-core', 'Uniswap/v3-periphery'] },
+    
+    // Aave
+    { pattern: /IPool|IAavePool|ILendingPool/, deps: ['aave/aave-v3-core'] },
+    
+    // Compound
+    { pattern: /Comptroller|CToken|CErc20|InterestRateModel/, deps: ['compound-finance/compound-protocol'] },
+    
+    // Chainlink
+    { pattern: /AggregatorV3Interface|VRFCoordinatorV2Interface/, deps: ['smartcontractkit/chainlink'] }
+  ];
   
-  if (code.includes('contracts-upgradeable') || code.includes('UpgradeableBeacon')) {
-    if (!dependencies.has('OpenZeppelin/openzeppelin-contracts-upgradeable')) {
-      dependencies.add('OpenZeppelin/openzeppelin-contracts-upgradeable');
-    }
-  }
-  
-  if (code.includes('solmate') || code.includes('Solmate')) {
-    if (!dependencies.has('transmissions11/solmate')) {
-      dependencies.add('transmissions11/solmate');
-    }
-  }
-  
-  if (code.includes('solady') || code.includes('Solady')) {
-    if (!dependencies.has('vectorized/solady')) {
-      dependencies.add('vectorized/solady');
+  // Check for each pattern in the code
+  for (const { pattern, deps } of patterns) {
+    if (pattern.test(code)) {
+      for (const dep of deps) {
+        if (!dependencies.has(dep)) {
+          dependencies.add(dep);
+        }
+      }
     }
   }
   
@@ -297,6 +333,27 @@ async function installDependencies(contractDir, dependencies) {
         }
       }
       
+      // Special handling for other common dependencies
+      if (dep.includes('uniswap') || dep.includes('Uniswap')) {
+        try {
+          console.log(`Trying git clone for ${dep}...`);
+          const version = versionedDeps.get(dep) || 'master';
+          const repoName = dep.split('/')[1];
+          const gitCommand = `git clone -b ${version} https://github.com/${dep}.git lib/${repoName}`;
+          
+          execSync(gitCommand, {
+            cwd: contractDir,
+            stdio: 'pipe'
+          });
+          
+          console.log(`${dep} installed via git clone using branch/tag: ${version}`);
+          installed.push(version === 'master' ? dep : `${dep}@${version}`);
+          continue;
+        } catch (gitError) {
+          console.error(`Git clone for ${dep} failed:`, gitError.message);
+        }
+      }
+      
       failed.push({ dep, error: error.message });
     }
   }
@@ -328,31 +385,32 @@ async function installDependencies(contractDir, dependencies) {
     } catch (error) {
       console.error(`Failed to install versioned dependency ${dep}:`, error.message);
       
-      // Special handling for versioned OpenZeppelin
-      if (dep.startsWith('OpenZeppelin/openzeppelin-contracts@')) {
-        try {
-          const [repo, version] = dep.split('@');
-          console.log(`Trying git clone for OpenZeppelin version ${version}...`);
-          
-          // For tagged versions, OpenZeppelin uses 'v' prefix
-          const tagPrefix = version !== 'master' && !version.startsWith('v') ? 'v' : '';
-          const gitCommand = `git clone -b ${tagPrefix}${version} https://github.com/OpenZeppelin/openzeppelin-contracts.git lib/openzeppelin-contracts`;
-          console.log(`Running: ${gitCommand}`);
-          
-          execSync(gitCommand, {
-            cwd: contractDir,
-            stdio: 'pipe'
-          });
-          
-          console.log(`OpenZeppelin ${version} installed via git clone`);
-          installed.push(dep);
-          continue;
-        } catch (gitError) {
-          console.error(`Git clone for version ${dep.split('@')[1]} failed:`, gitError.message);
-          failed.push({ dep, error: gitError.message });
+      // Special handling for common repositories
+      const [repo, version] = dep.split('@');
+      try {
+        console.log(`Trying git clone for ${repo} version ${version}...`);
+        
+        // For tagged versions in OpenZeppelin, use 'v' prefix if not already present
+        let tagPrefix = '';
+        if (repo.includes('OpenZeppelin') && version !== 'master' && !version.startsWith('v')) {
+          tagPrefix = 'v';
         }
-      } else {
-        failed.push({ dep, error: error.message });
+        
+        const repoName = repo.split('/')[1];
+        const gitCommand = `git clone -b ${tagPrefix}${version} https://github.com/${repo}.git lib/${repoName}`;
+        console.log(`Running: ${gitCommand}`);
+        
+        execSync(gitCommand, {
+          cwd: contractDir,
+          stdio: 'pipe'
+        });
+        
+        console.log(`${repo} ${version} installed via git clone`);
+        installed.push(dep);
+        continue;
+      } catch (gitError) {
+        console.error(`Git clone for version ${version} failed:`, gitError.message);
+        failed.push({ dep, error: gitError.message });
       }
     }
   }
@@ -461,16 +519,185 @@ async function handleOpenZeppelinManually(contractDir, dependencies, dependencyR
 }
 
 /**
+ * Handle common protocol dependencies manually if installation fails
+ * @param {string} contractDir - Contract directory
+ * @param {string[]} dependencies - List of dependencies
+ * @param {Object} dependencyResults - Results from installDependencies
+ * @returns {string[]} Updated list of installed dependencies
+ */
+async function handleProtocolDependenciesManually(contractDir, dependencies, dependencyResults) {
+  const installed = [...dependencyResults.installed];
+  const failedDeps = dependencyResults.failed.map(f => f.dep);
+  
+  // Define protocols to handle manually
+  const protocols = [
+    {
+      name: 'Uniswap V2 Core',
+      pattern: dep => dep.startsWith('Uniswap/v2-core'),
+      repoUrl: 'https://github.com/Uniswap/v2-core.git',
+      libPath: 'lib/v2-core'
+    },
+    {
+      name: 'Uniswap V2 Periphery',
+      pattern: dep => dep.startsWith('Uniswap/v2-periphery'),
+      repoUrl: 'https://github.com/Uniswap/v2-periphery.git',
+      libPath: 'lib/v2-periphery'
+    },
+    {
+      name: 'Uniswap V3 Core',
+      pattern: dep => dep.startsWith('Uniswap/v3-core'),
+      repoUrl: 'https://github.com/Uniswap/v3-core.git',
+      libPath: 'lib/v3-core'
+    },
+    {
+      name: 'Uniswap V3 Periphery',
+      pattern: dep => dep.startsWith('Uniswap/v3-periphery'),
+      repoUrl: 'https://github.com/Uniswap/v3-periphery.git',
+      libPath: 'lib/v3-periphery'
+    },
+    {
+      name: 'Aave V3 Core',
+      pattern: dep => dep.startsWith('aave/aave-v3-core'),
+      repoUrl: 'https://github.com/aave/aave-v3-core.git',
+      libPath: 'lib/aave-v3-core'
+    },
+    {
+      name: 'Compound Protocol',
+      pattern: dep => dep.startsWith('compound-finance/compound-protocol'),
+      repoUrl: 'https://github.com/compound-finance/compound-protocol.git',
+      libPath: 'lib/compound-protocol'
+    },
+    {
+      name: 'Chainlink',
+      pattern: dep => dep.startsWith('smartcontractkit/chainlink'),
+      repoUrl: 'https://github.com/smartcontractkit/chainlink.git',
+      libPath: 'lib/chainlink'
+    },
+    {
+      name: 'Solmate',
+      pattern: dep => dep.startsWith('transmissions11/solmate'),
+      repoUrl: 'https://github.com/transmissions11/solmate.git',
+      libPath: 'lib/solmate'
+    },
+    {
+      name: 'Solady',
+      pattern: dep => dep.startsWith('vectorized/solady'),
+      repoUrl: 'https://github.com/vectorized/solady.git',
+      libPath: 'lib/solady'
+    }
+  ];
+  
+  // Process each protocol
+  for (const protocol of protocols) {
+    // Check if the protocol is in the dependencies and failed to install
+    const protocolDeps = dependencies.filter(dep => protocol.pattern(dep));
+    if (protocolDeps.length === 0) continue;
+    
+    const failedProtocolDeps = protocolDeps.filter(dep => failedDeps.includes(dep));
+    if (failedProtocolDeps.length === 0) continue;
+    
+    console.log(`Manual handling for ${protocol.name} dependencies...`);
+    
+    // Get version if specified
+    let version = 'master';
+    for (const dep of protocolDeps) {
+      if (dep.includes('@')) {
+        version = dep.split('@')[1];
+        break;
+      }
+    }
+    
+    // Try to git clone the repo
+    try {
+      // Create path if it doesn't exist
+      fs.ensureDirSync(path.join(contractDir, path.dirname(protocol.libPath)));
+      
+      // Determine if we need tag prefix (common for versioned releases)
+      const useTagPrefix = !version.startsWith('v') && version !== 'master';
+      const tagPrefix = useTagPrefix ? 'v' : '';
+      
+      const cloneCmd = `git clone -b ${tagPrefix}${version} ${protocol.repoUrl} ${protocol.libPath}`;
+      console.log(`Running: ${cloneCmd}`);
+      
+      execSync(cloneCmd, {
+        cwd: contractDir,
+        stdio: 'pipe'
+      });
+      
+      console.log(`Successfully cloned ${protocol.name} with version ${version}`);
+      
+      // Add to installed list
+      for (const dep of failedProtocolDeps) {
+        if (!installed.includes(dep)) {
+          installed.push(dep);
+        }
+      }
+    } catch (cloneError) {
+      console.warn(`Failed to git clone ${protocol.name} with version ${version}:`, cloneError.message);
+      
+      // Try without version if specific version failed
+      if (version !== 'master') {
+        try {
+          console.log(`Trying to clone master branch of ${protocol.name}...`);
+          execSync(`git clone ${protocol.repoUrl} ${protocol.libPath}`, {
+            cwd: contractDir,
+            stdio: 'pipe'
+          });
+          
+          console.log(`Successfully cloned ${protocol.name} master branch`);
+          
+          // Add to installed list (without version)
+          for (const dep of failedProtocolDeps) {
+            const baseRepo = dep.split('@')[0];
+            if (!installed.includes(baseRepo)) {
+              installed.push(baseRepo);
+            }
+          }
+        } catch (defaultCloneError) {
+          console.error(`Failed to clone ${protocol.name} master branch:`, defaultCloneError.message);
+        }
+      }
+    }
+  }
+  
+  return installed;
+}
+
+/**
  * Preprocess import paths in Solidity code
  * @param {string} code - Original Solidity code
  * @returns {string} Processed code with normalized imports
  */
 function preprocessImportPaths(code) {
-  // Normalize versioned imports to standard format
-  return code.replace(
+  // Normalize OpenZeppelin imports
+  let processedCode = code.replace(
     /import\s+["']@openzeppelin\/contracts@[^\/]+\/([^"']+)["']/g,
     'import "@openzeppelin/contracts/$1"'
   );
+  
+  // Normalize Uniswap V2 imports
+  processedCode = processedCode.replace(
+    /import\s+["']@uniswap\/v2-core@[^\/]+\/([^"']+)["']/g,
+    'import "@uniswap/v2-core/$1"'
+  );
+  
+  processedCode = processedCode.replace(
+    /import\s+["']@uniswap\/v2-periphery@[^\/]+\/([^"']+)["']/g,
+    'import "@uniswap/v2-periphery/$1"'
+  );
+  
+  // Normalize Uniswap V3 imports
+  processedCode = processedCode.replace(
+    /import\s+["']@uniswap\/v3-core@[^\/]+\/([^"']+)["']/g,
+    'import "@uniswap/v3-core/$1"'
+  );
+  
+  processedCode = processedCode.replace(
+    /import\s+["']@uniswap\/v3-periphery@[^\/]+\/([^"']+)["']/g,
+    'import "@uniswap/v3-periphery/$1"'
+  );
+  
+  return processedCode;
 }
 
 /**
@@ -488,9 +715,15 @@ async function copyRequiredFiles(contractDir, sourceCode) {
     imports.push(match[1]);
   }
   
-  // Check for OpenZeppelin imports and ensure files exist
+  // Track different types of imports
   const ozImports = imports.filter(imp => imp.startsWith('@openzeppelin/contracts/'));
+  const uniswapV2Imports = imports.filter(imp => imp.startsWith('@uniswap/v2'));
+  const uniswapV3Imports = imports.filter(imp => imp.startsWith('@uniswap/v3'));
+  const aaveImports = imports.filter(imp => imp.startsWith('@aave/'));
+  const compoundImports = imports.filter(imp => imp.includes('compound'));
+  const chainlinkImports = imports.filter(imp => imp.includes('chainlink'));
   
+  // Check for OpenZeppelin imports and ensure files exist
   if (ozImports.length > 0) {
     // Check if OpenZeppelin is properly installed
     const ozDir = path.join(contractDir, 'lib/openzeppelin-contracts');
@@ -504,12 +737,72 @@ async function copyRequiredFiles(contractDir, sourceCode) {
       fs.ensureDirSync(path.join(ozDir, 'contracts/security'));
     }
   }
+  
+  // Check for Uniswap V2 imports
+  if (uniswapV2Imports.length > 0) {
+    const v2CoreDir = path.join(contractDir, 'lib/v2-core');
+    const v2PeripheryDir = path.join(contractDir, 'lib/v2-periphery');
+    
+    if (!fs.existsSync(v2CoreDir)) {
+      console.log('Uniswap V2 Core directory not found, creating structure...');
+      fs.ensureDirSync(path.join(v2CoreDir, 'contracts'));
+      fs.ensureDirSync(path.join(v2CoreDir, 'interfaces'));
+    }
+    
+    if (!fs.existsSync(v2PeripheryDir)) {
+      console.log('Uniswap V2 Periphery directory not found, creating structure...');
+      fs.ensureDirSync(path.join(v2PeripheryDir, 'contracts'));
+      fs.ensureDirSync(path.join(v2PeripheryDir, 'interfaces'));
+    }
+  }
+  
+  // Check for Uniswap V3 imports
+  if (uniswapV3Imports.length > 0) {
+    const v3CoreDir = path.join(contractDir, 'lib/v3-core');
+    const v3PeripheryDir = path.join(contractDir, 'lib/v3-periphery');
+    
+    if (!fs.existsSync(v3CoreDir)) {
+      console.log('Uniswap V3 Core directory not found, creating structure...');
+      fs.ensureDirSync(path.join(v3CoreDir, 'contracts'));
+      fs.ensureDirSync(path.join(v3CoreDir, 'interfaces'));
+    }
+    
+    if (!fs.existsSync(v3PeripheryDir)) {
+      console.log('Uniswap V3 Periphery directory not found, creating structure...');
+      fs.ensureDirSync(path.join(v3PeripheryDir, 'contracts'));
+      fs.ensureDirSync(path.join(v3PeripheryDir, 'interfaces'));
+    }
+  }
+  
+  // Check for Aave imports
+  if (aaveImports.length > 0) {
+    const aaveDir = path.join(contractDir, 'lib/aave-v3-core');
+    
+    if (!fs.existsSync(aaveDir)) {
+      console.log('Aave directory not found, creating structure...');
+      fs.ensureDirSync(path.join(aaveDir, 'contracts'));
+      fs.ensureDirSync(path.join(aaveDir, 'interfaces'));
+    }
+  }
+  
+  // Check for Compound imports
+  if (compoundImports.length > 0) {
+    const compoundDir = path.join(contractDir, 'lib/compound-protocol');
+    
+    if (!fs.existsSync(compoundDir)) {
+      console.log('Compound directory not found, creating structure...');
+      fs.ensureDirSync(path.join(compoundDir, 'contracts'));
+    }
+  }
+  
+  // Check for Chainlink imports
+  if (chainlinkImports.length > 0) {
+    const chainlinkDir = path.join(contractDir, 'lib/chainlink');
+    
+    if (!fs.existsSync(chainlinkDir)) {
+      console.log('Chainlink directory not found, creating structure...');
+      fs.ensureDirSync(path.join(chainlinkDir, 'contracts'));
+      fs.ensureDirSync(path.join(chainlinkDir, 'interfaces'));
+    }
+  }
 }
-
-module.exports = {
-  extractDependenciesFromCode,
-  installDependencies,
-  handleOpenZeppelinManually,
-  preprocessImportPaths,
-  copyRequiredFiles
-};
