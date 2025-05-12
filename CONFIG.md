@@ -40,7 +40,7 @@ This document provides detailed instructions on how to set up and use the Solidi
 
 4. Install solc-select for Solidity compiler version management:
    ```bash
-   pip install solc-select
+   pipx install solc-select
    solc-select install 0.8.19  # Install default version
    solc-select use 0.8.19      # Set default version
    ```
