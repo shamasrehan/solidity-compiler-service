@@ -806,3 +806,13 @@ async function copyRequiredFiles(contractDir, sourceCode) {
     }
   }
 }
+
+module.exports = {
+  extractDependenciesFromCode,
+  installDependencies,
+  handleOpenZeppelinManually,
+  handleProtocolDependenciesManually,
+  preprocessImportPaths,
+  copyRequiredFiles
+  // Add any other functions that should be exported
+};

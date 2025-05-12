@@ -249,3 +249,11 @@ function compileSolidityWithSolc(contractPath, contractName, compilerVersion) {
     throw error;
   }
 }
+module.exports = {
+  installSolidityVersion,
+  extractContractName,
+  extractSolidityVersion,
+  compileSolidityWithSolc,
+  runSolcWithDocker
+  // Add any other functions that should be exported
+};
