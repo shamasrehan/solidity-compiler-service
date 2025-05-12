@@ -1,7 +1,7 @@
 const { execSync } = require('child_process');
 const fs = require('fs-extra');
 const path = require('path');
-const { checkDependencyInstalled, createRemappingsFile } = require('./foundryUtils');
+const { checkDependencyInstalled, createRemappingsFile, verifyDependencyInstallation } = require('./foundryUtils');
 
 /**
  * Analyze contract code for imports and extract dependencies
@@ -360,6 +360,9 @@ async function installDependencies(contractDir, dependencies) {
   // Create remappings file after installing dependencies
   createRemappingsFile(contractDir, dependencies);
   
+  // Verify that dependencies are properly installed
+  verifyDependencyInstallation(contractDir, dependencies);
+  
   return { installed, failed };
 }
 
@@ -382,7 +385,22 @@ async function handleOpenZeppelinManually(contractDir, dependencies, dependencyR
     // Create directory structure for OpenZeppelin
     const ozDir = path.join(contractDir, 'lib/openzeppelin-contracts');
     const ozContractsDir = path.join(ozDir, 'contracts');
+    const tokenDir = path.join(ozContractsDir, 'token');
+    const erc20Dir = path.join(tokenDir, 'ERC20');
+    const erc721Dir = path.join(tokenDir, 'ERC721');
+    const erc721ExtDir = path.join(erc721Dir, 'extensions');
+    const accessDir = path.join(ozContractsDir, 'access');
+    const utilsDir = path.join(ozContractsDir, 'utils');
+    const securityDir = path.join(ozContractsDir, 'security');
+    
     fs.ensureDirSync(ozContractsDir);
+    fs.ensureDirSync(tokenDir);
+    fs.ensureDirSync(erc20Dir);
+    fs.ensureDirSync(erc721Dir);
+    fs.ensureDirSync(erc721ExtDir);
+    fs.ensureDirSync(accessDir);
+    fs.ensureDirSync(utilsDir);
+    fs.ensureDirSync(securityDir);
     
     // Get version if specified
     let version = 'master';
@@ -442,8 +460,56 @@ async function handleOpenZeppelinManually(contractDir, dependencies, dependencyR
   return installed;
 }
 
+/**
+ * Preprocess import paths in Solidity code
+ * @param {string} code - Original Solidity code
+ * @returns {string} Processed code with normalized imports
+ */
+function preprocessImportPaths(code) {
+  // Normalize versioned imports to standard format
+  return code.replace(
+    /import\s+["']@openzeppelin\/contracts@[^\/]+\/([^"']+)["']/g,
+    'import "@openzeppelin/contracts/$1"'
+  );
+}
+
+/**
+ * Copy required files if dependency installation fails
+ * @param {string} contractDir - Contract directory
+ * @param {string} sourceCode - Solidity source code
+ */
+async function copyRequiredFiles(contractDir, sourceCode) {
+  // Extract all import paths from the source code
+  const importRegex = /import\s+["']([^"']+)["']/g;
+  const imports = [];
+  let match;
+  
+  while ((match = importRegex.exec(sourceCode)) !== null) {
+    imports.push(match[1]);
+  }
+  
+  // Check for OpenZeppelin imports and ensure files exist
+  const ozImports = imports.filter(imp => imp.startsWith('@openzeppelin/contracts/'));
+  
+  if (ozImports.length > 0) {
+    // Check if OpenZeppelin is properly installed
+    const ozDir = path.join(contractDir, 'lib/openzeppelin-contracts');
+    
+    if (!fs.existsSync(ozDir)) {
+      console.log('OpenZeppelin directory not found, creating manual structure...');
+      fs.ensureDirSync(path.join(ozDir, 'contracts/utils'));
+      fs.ensureDirSync(path.join(ozDir, 'contracts/token/ERC20'));
+      fs.ensureDirSync(path.join(ozDir, 'contracts/token/ERC721/extensions'));
+      fs.ensureDirSync(path.join(ozDir, 'contracts/access'));
+      fs.ensureDirSync(path.join(ozDir, 'contracts/security'));
+    }
+  }
+}
+
 module.exports = {
   extractDependenciesFromCode,
   installDependencies,
-  handleOpenZeppelinManually
+  handleOpenZeppelinManually,
+  preprocessImportPaths,
+  copyRequiredFiles
 };

@@ -17,12 +17,15 @@ const {
 const { 
   extractDependenciesFromCode, 
   installDependencies,
-  handleOpenZeppelinManually
+  handleOpenZeppelinManually,
+  preprocessImportPaths,
+  copyRequiredFiles
 } = require('../utils/dependencyUtils');
 const {
   createFoundryConfig,
   cleanupFolders,
-  checkFoundryInstallation
+  checkFoundryInstallation,
+  verifyDependencyInstallation
 } = require('../utils/foundryUtils');
 
 /**
@@ -61,6 +64,31 @@ function findJsonFiles(dir) {
 async function compileWithFoundry(contractDir, contractName, outputDir, dependencyResults, effectiveCompilerVersion, evmVersion) {
   console.log('Building contract with Foundry...');
   
+  // Before compiling, ensure all import paths are correctly mapped in the source file
+  const srcDir = path.join(contractDir, 'src');
+  const sourceFiles = fs.readdirSync(srcDir);
+  
+  for (const file of sourceFiles) {
+    if (file.endsWith('.sol')) {
+      const filePath = path.join(srcDir, file);
+      let content = fs.readFileSync(filePath, 'utf8');
+      
+      // Replace any problematic import paths with correct ones
+      // This is a safeguard if remappings don't work properly
+      content = content.replace(
+        /import\s+["']@openzeppelin\/contracts\/([^"']+)["']/g, 
+        'import "@openzeppelin/contracts/$1"'
+      );
+      
+      content = content.replace(
+        /import\s+["']@openzeppelin\/contracts@[^\/]+\/([^"']+)["']/g,
+        'import "@openzeppelin/contracts/$1"'
+      );
+      
+      fs.writeFileSync(filePath, content);
+    }
+  }
+  
   // Check forge help for the correct command
   const forgeHelp = execSync('forge build --help', { 
     encoding: 'utf8', 
@@ -73,13 +101,28 @@ async function compileWithFoundry(contractDir, contractName, outputDir, dependen
     buildCommand += ' --skip test';
   }
   
-  const buildOutput = execSync(buildCommand, { 
-    cwd: contractDir,
-    encoding: 'utf8',
-    stdio: ['pipe', 'pipe', 'pipe']
-  });
-  
-  console.log('Forge build completed');
+  try {
+    const buildOutput = execSync(buildCommand, { 
+      cwd: contractDir,
+      encoding: 'utf8',
+      stdio: ['pipe', 'pipe', 'pipe']
+    });
+    
+    console.log('Forge build completed');
+  } catch (buildError) {
+    console.error('Forge build failed:', buildError.message);
+    
+    // Try again with verbose output to get more information
+    try {
+      console.log('Retrying build with verbose output...');
+      execSync(`forge build -vvv`, {
+        cwd: contractDir,
+        stdio: 'inherit' // Show output directly
+      });
+    } catch (verboseError) {
+      throw new Error(`Forge build failed: ${verboseError.message}`);
+    }
+  }
   
   // Look in the correct output directory
   const outDir = path.join(contractDir, 'out');
@@ -177,19 +220,22 @@ async function compileContract(req, res) {
   const contractId = Date.now().toString();
   const contractDir = path.join(TEMP_DIR, contractId);
   
+  // Preprocess the code to normalize import paths
+  const normalizedCode = preprocessImportPaths(code);
+  
   // Extract the contract name from the code
-  const contractName = extractContractName(code);
+  const contractName = extractContractName(normalizedCode);
   console.log(`Detected contract name: ${contractName}`);
   
   // Extract Solidity version from code if not specified
-  const detectedCompilerVersion = extractSolidityVersion(code);
+  const detectedCompilerVersion = extractSolidityVersion(normalizedCode);
   const effectiveCompilerVersion = compilerVersion || detectedCompilerVersion;
   if (effectiveCompilerVersion) {
     console.log(`Detected Solidity version: ${effectiveCompilerVersion}`);
   }
   
   // Analyze code for dependencies
-  const detectedDependencies = extractDependenciesFromCode(code);
+  const detectedDependencies = extractDependenciesFromCode(normalizedCode);
   console.log('Detected dependencies:', detectedDependencies);
   
   // Filter and normalize user-provided dependencies
@@ -216,8 +262,11 @@ async function compileContract(req, res) {
   try {
     // Create folder
     fs.ensureDirSync(contractDir);
-    fs.writeFileSync(contractPath, code);
+    fs.writeFileSync(contractPath, normalizedCode);
     console.log(`Contract file created at: ${contractPath}`);
+    
+    // Make sure required files exist
+    await copyRequiredFiles(contractDir, normalizedCode);
     
     // Check and install required Solidity version if specified
     if (effectiveCompilerVersion) {
@@ -280,6 +329,9 @@ async function compileContract(req, res) {
       // Additional manual handling for OpenZeppelin if installation failed
       const installedDeps = await handleOpenZeppelinManually(contractDir, allDependencies, dependencyResults);
       
+      // Verify dependencies are correctly installed
+      verifyDependencyInstallation(contractDir, allDependencies);
+      
       // Run forge build
       try {
         const compileResult = await compileWithFoundry(
@@ -311,7 +363,7 @@ async function compileContract(req, res) {
             contractDir, 
             contractFileName, 
             contractName, 
-            code, 
+            normalizedCode, 
             evmVersion
           );
           

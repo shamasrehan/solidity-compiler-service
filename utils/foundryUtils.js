@@ -78,6 +78,19 @@ function createFoundryConfig(contractDir, dependencies, evmVersion, compilerVers
   // Add remappings directly in foundry.toml
   foundryConfig += `remappings = [\n`;
   
+  // Explicitly set remapping paths in the config
+  if (dependencies.some(dep => dep.startsWith('OpenZeppelin/openzeppelin-contracts'))) {
+    // More explicit remappings with proper path separators
+    foundryConfig += `  '@openzeppelin/=lib/openzeppelin-contracts/',\n`;
+    foundryConfig += `  '@openzeppelin/contracts/=lib/openzeppelin-contracts/contracts/',\n`;
+    
+    // Add explicit remappings for common modules
+    foundryConfig += `  '@openzeppelin/contracts/utils/=lib/openzeppelin-contracts/contracts/utils/',\n`;
+    foundryConfig += `  '@openzeppelin/contracts/token/=lib/openzeppelin-contracts/contracts/token/',\n`;
+    foundryConfig += `  '@openzeppelin/contracts/access/=lib/openzeppelin-contracts/contracts/access/',\n`;
+    foundryConfig += `  '@openzeppelin/contracts/security/=lib/openzeppelin-contracts/contracts/security/',\n`;
+  }
+  
   // Track versioned dependencies to add specific remappings
   const versionedDeps = new Map();
   dependencies.forEach(dep => {
@@ -88,11 +101,6 @@ function createFoundryConfig(contractDir, dependencies, evmVersion, compilerVers
   });
   
   // Add standard remappings for OpenZeppelin contracts
-  if (dependencies.some(dep => dep.startsWith('OpenZeppelin/openzeppelin-contracts'))) {
-    foundryConfig += `  '@openzeppelin/=lib/openzeppelin-contracts/',\n`;
-    foundryConfig += `  '@openzeppelin/contracts/=lib/openzeppelin-contracts/contracts/',\n`;
-  }
-  
   if (dependencies.some(dep => dep.startsWith('OpenZeppelin/openzeppelin-contracts-upgradeable'))) {
     foundryConfig += `  '@openzeppelin/contracts-upgradeable/=lib/openzeppelin-contracts-upgradeable/contracts/',\n`;
   }
@@ -132,8 +140,19 @@ function createRemappingsFile(contractDir, dependencies) {
     
     // Add common remappings for known libraries
     if (dependencies.some(dep => dep.startsWith('OpenZeppelin/openzeppelin-contracts'))) {
+      // More explicit remappings to handle different import paths
       remappingsContent += '@openzeppelin/=lib/openzeppelin-contracts/\n';
       remappingsContent += '@openzeppelin/contracts/=lib/openzeppelin-contracts/contracts/\n';
+      
+      // Add direct path remappings for common imports that might be causing issues
+      remappingsContent += '@openzeppelin/contracts/utils/=lib/openzeppelin-contracts/contracts/utils/\n';
+      remappingsContent += '@openzeppelin/contracts/token/=lib/openzeppelin-contracts/contracts/token/\n';
+      remappingsContent += '@openzeppelin/contracts/access/=lib/openzeppelin-contracts/contracts/access/\n';
+      remappingsContent += '@openzeppelin/contracts/security/=lib/openzeppelin-contracts/contracts/security/\n';
+      
+      // Also ensure absolute paths are correctly mapped
+      const absoluteContractPath = path.resolve(contractDir, 'lib/openzeppelin-contracts/contracts');
+      remappingsContent += `@openzeppelin/contracts/=${absoluteContractPath}/\n`;
       
       // Ensure the lib directory exists
       if (fs.existsSync(path.join(contractDir, 'lib/openzeppelin-contracts'))) {
@@ -184,10 +203,61 @@ function createRemappingsFile(contractDir, dependencies) {
   }
 }
 
+/**
+ * Verify and fix dependency installation
+ * @param {string} contractDir - Contract directory
+ * @param {string[]} dependencies - List of dependencies
+ */
+function verifyDependencyInstallation(contractDir, dependencies) {
+  try {
+    console.log('Verifying dependency installation...');
+    
+    // Check if key OpenZeppelin files exist
+    if (dependencies.some(dep => dep.startsWith('OpenZeppelin/openzeppelin-contracts'))) {
+      const contractsDir = path.join(contractDir, 'lib/openzeppelin-contracts/contracts');
+      const utilsDir = path.join(contractsDir, 'utils');
+      const tokenDir = path.join(contractsDir, 'token');
+      const accessDir = path.join(contractsDir, 'access');
+      
+      if (!fs.existsSync(contractsDir)) {
+        console.error('OpenZeppelin contracts directory not found');
+        // Try to recreate the directory structure
+        fs.ensureDirSync(contractsDir);
+        fs.ensureDirSync(utilsDir);
+        fs.ensureDirSync(tokenDir);
+        fs.ensureDirSync(accessDir);
+        
+        console.log('Created OpenZeppelin directory structure, but files may be missing');
+        return false;
+      }
+      
+      // Check specific files that might be commonly imported
+      const criticalFiles = [
+        path.join(utilsDir, 'Counters.sol'),
+        path.join(tokenDir, 'ERC20/ERC20.sol'),
+        path.join(tokenDir, 'ERC721/extensions/ERC721URIStorage.sol'),
+        path.join(accessDir, 'Ownable.sol')
+      ];
+      
+      for (const file of criticalFiles) {
+        if (!fs.existsSync(file)) {
+          console.warn(`Critical file missing: ${file}`);
+        }
+      }
+    }
+    
+    return true;
+  } catch (error) {
+    console.error('Error verifying dependencies:', error.message);
+    return false;
+  }
+}
+
 module.exports = {
   checkFoundryInstallation,
   checkDependencyInstalled,
   cleanupFolders,
   createFoundryConfig,
-  createRemappingsFile
+  createRemappingsFile,
+  verifyDependencyInstallation
 };
