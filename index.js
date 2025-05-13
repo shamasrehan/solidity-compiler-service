@@ -113,6 +113,9 @@ const cleanupInterval = setInterval(() => {
 process.on('SIGTERM', cleanup);
 process.on('SIGINT', cleanup);
 
+// Add version constant at the top with other config
+const VERSION = process.env.API_VERSION || '1.0.0';
+
 /**
  * @swagger
  * /api/health:
@@ -157,30 +160,84 @@ process.on('SIGINT', cleanup);
  *                     heapUsed:
  *                       type: string
  *                       example: 15MB
+ *                 services:
+ *                   type: object
+ *                   properties:
+ *                     tempDir:
+ *                       type: boolean
+ *                       example: true
+ *                     artifactsDir:
+ *                       type: boolean
+ *                       example: true
+ *                     cacheDir:
+ *                       type: boolean
+ *                       example: true
+ *                     solc:
+ *                       type: boolean
+ *                       example: true
  */
-app.get('/api/health', (req, res) => {
-  const memoryUsage = process.memoryUsage();
-  
-  res.json({
-    status: 'ok',
-    version: '1.0.0',
-    activeJobs: activeCompilations.size,
-    cacheSize: compilationCache.size,
-    historySize: compilationHistory.size,
-    uptime: process.uptime(),
-    memory: {
-      rss: `${Math.round(memoryUsage.rss / 1024 / 1024)}MB`,
-      heapTotal: `${Math.round(memoryUsage.heapTotal / 1024 / 1024)}MB`,
-      heapUsed: `${Math.round(memoryUsage.heapUsed / 1024 / 1024)}MB`,
-    },
-    config: {
-      tempDir: config.TEMP_DIR,
-      artifactsDir: config.ARTIFACTS_DIR,
-      cacheDir: config.CACHE_DIR,
-      maxContractSize: `${Math.round(config.MAX_CONTRACT_SIZE_BYTES / 1024)}KB`,
-      rateLimit: `${config.RATE_LIMIT_MAX_REQUESTS} requests per ${config.RATE_LIMIT_WINDOW_MS / 1000} seconds`,
+app.get('/api/health', async (req, res) => {
+  try {
+    // Check if critical directories are accessible
+    const services = {
+      tempDir: await fs.pathExists(config.TEMP_DIR),
+      artifactsDir: await fs.pathExists(config.ARTIFACTS_DIR),
+      cacheDir: await fs.pathExists(config.CACHE_DIR)
+    };
+
+    // Check if solc is available
+    try {
+      await execAsync('solc --version');
+      services.solc = true;
+    } catch (error) {
+      services.solc = false;
     }
-  });
+
+    // Get memory usage with error handling
+    let memoryUsage;
+    try {
+      memoryUsage = process.memoryUsage();
+    } catch (error) {
+      console.error('Error getting memory usage:', error);
+      memoryUsage = {
+        rss: 0,
+        heapTotal: 0,
+        heapUsed: 0
+      };
+    }
+
+    // Check if any critical service is down
+    const allServicesHealthy = Object.values(services).every(status => status === true);
+    const status = allServicesHealthy ? 'ok' : 'degraded';
+
+    // Get active jobs and cache info
+    const activeJobs = activeCompilations ? activeCompilations.size : 0;
+    const cacheSize = compilationCache ? compilationCache.size : 0;
+    const historySize = compilationHistory ? compilationHistory.size : 0;
+
+    res.json({
+      status,
+      version: VERSION,
+      activeJobs,
+      cacheSize,
+      historySize,
+      uptime: process.uptime(),
+      memory: {
+        rss: `${Math.round(memoryUsage.rss / 1024 / 1024)}MB`,
+        heapTotal: `${Math.round(memoryUsage.heapTotal / 1024 / 1024)}MB`,
+        heapUsed: `${Math.round(memoryUsage.heapUsed / 1024 / 1024)}MB`
+      },
+      services
+    });
+  } catch (error) {
+    console.error('Health check failed:', error);
+    res.status(500).json({
+      status: 'error',
+      version: VERSION,
+      error: 'Health check failed',
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
 });
 
 /**
@@ -335,7 +392,7 @@ app.post('/api/compile', async (req, res) => {
     if (!version) {
       return res.status(400).json({ 
         success: false, 
-        error: 'Compiler version is required' 
+        error: 'Compiler version is requiredxx' 
       });
     }
     
@@ -409,7 +466,68 @@ app.post('/api/compile', async (req, res) => {
       status: 'compiling'
     });
 
-    // ... rest of the file remains unchanged ...
+    // Extract contract name from source
+    const contractName = solcUtils.extractContractName(source);
+    
+    // Compile the contract
+    let compilationResult;
+    try {
+      compilationResult = await solcUtils.compileWithFallbackMethod(
+        source,
+        contractName,
+        version,
+        settings || {}
+      );
+    } catch (compileError) {
+      throw new Error(`Compilation failed: ${compileError.message}`);
+    }
+    
+    // Create a directory for the compilation artifacts
+    const artifactDir = path.join(config.ARTIFACTS_DIR, jobId);
+    await fs.ensureDir(artifactDir);
+    
+    // Save the source code and compilation result
+    await fs.writeFile(path.join(artifactDir, 'source.sol'), source);
+    await fs.writeJson(path.join(artifactDir, 'result.json'), compilationResult, { spaces: 2 });
+    
+    // Store in history
+    compilationHistory.set(jobId, {
+      timestamp: Date.now(),
+      status: 'success',
+      contractName,
+      version,
+      settings: settings || {}
+    });
+    
+    // Store in cache
+    compilationCache.set(customCacheKey, {
+      jobId,
+      result: compilationResult,
+      expiresAt: Date.now() + config.CACHE_EXPIRATION_MS
+    });
+    
+    // Update job status to completed
+    activeCompilations.set(jobId, {
+      ...activeCompilations.get(jobId),
+      status: 'completed',
+      endTime: Date.now()
+    });
+    
+    // Clean up temporary directory
+    if (config.CLEANUP_TEMP_FILES) {
+      try {
+        await fs.remove(tempDir);
+      } catch (cleanupError) {
+        console.warn(`Failed to clean up temp directory for job ${jobId}:`, cleanupError.message);
+      }
+    }
+    
+    // Return the compilation result
+    res.json({
+      success: true,
+      jobId,
+      compiled: compilationResult
+    });
   } catch (error) {
     handleCompilationError(jobId, error, res);
   }
@@ -449,28 +567,87 @@ app.post('/api/compile', async (req, res) => {
  *                   type: string
  *                   example: Source code not found
  */
-app.get('/api/history/:jobId/source', async (req, res) => {
-  const { jobId } = req.params;
-  
+app.get('/api/history', async (req, res) => {
   try {
-    const sourcePath = path.join(config.ARTIFACTS_DIR, jobId, 'source.sol');
+    const limit = parseInt(req.query.limit) || 10;
+    const history = [];
     
-    if (!await fs.pathExists(sourcePath)) {
-      return res.status(404).json({
-        success: false,
-        error: 'Source code not found'
+    // Convert the history map to an array and sort by timestamp (latest first)
+    const sortedEntries = [...compilationHistory.entries()]
+      .sort((a, b) => b[1].timestamp - a[1].timestamp)
+      .slice(0, limit);
+    
+    for (const [id, data] of sortedEntries) {
+      history.push({
+        id,
+        ...data
       });
     }
     
-    const source = await fs.readFile(sourcePath, 'utf8');
-    
-    res.set('Content-Type', 'text/plain');
-    res.send(source);
+    res.json({
+      success: true,
+      history
+    });
   } catch (error) {
-    console.error(`Error fetching source for ${jobId}:`, error);
+    console.error('Error fetching history:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to fetch source code',
+      error: 'Failed to fetch history',
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+});
+
+app.get('/api/history/:jobId', async (req, res) => {
+  const { jobId } = req.params;
+  
+  try {
+    if (!compilationHistory.has(jobId)) {
+      return res.status(404).json({
+        success: false,
+        error: 'Job not found'
+      });
+    }
+    
+    const jobInfo = compilationHistory.get(jobId);
+    
+    res.json({
+      success: true,
+      id: jobId,
+      ...jobInfo
+    });
+  } catch (error) {
+    console.error(`Error fetching details for job ${jobId}:`, error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch job details',
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+});
+
+// Fix status endpoint
+app.get('/api/status', async (req, res) => {
+  try {
+    const activeJobs = [];
+    
+    for (const [id, data] of activeCompilations.entries()) {
+      activeJobs.push({
+        id,
+        ...data
+      });
+    }
+    
+    res.json({
+      success: true,
+      activeJobs,
+      count: activeJobs.length
+    });
+  } catch (error) {
+    console.error('Error fetching active jobs:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch active jobs',
       details: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }

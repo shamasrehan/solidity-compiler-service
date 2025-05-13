@@ -14,77 +14,56 @@ const os = require('os');
  * @param {string} contractName - Name of the contract
  * @returns {Object} Object with bytecode and ABI
  */
-function directSolcCompile(code, contractName) {
-  try {
-    console.log('Attempting direct solc compilation as last resort...');
-    
-    // Create a temporary file
-    const tempDir = os.tmpdir();
-    const tempFile = path.join(tempDir, `${contractName}.sol`);
-    
-    // Write the code to the temporary file
-    fs.writeFileSync(tempFile, code);
-    
-    // Run solc directly with simple output format
-    const output = execSync(`solc --bin --abi ${tempFile}`, {
-      encoding: 'utf8'
-    });
-    
-    // Parse the output
-    const lines = output.split('\n');
-    let bytecode = '';
-    let abi = '';
-    let isBytecode = false;
-    let isAbi = false;
-    
-    for (const line of lines) {
-      if (line.includes('Binary:')) {
-        isBytecode = true;
-        isAbi = false;
-        continue;
-      }
-      
-      if (line.includes('ABI:')) {
-        isBytecode = false;
-        isAbi = true;
-        continue;
-      }
-      
-      if (isBytecode && line.trim() !== '') {
-        bytecode = line.trim();
-        isBytecode = false;
-      }
-      
-      if (isAbi && line.trim() !== '') {
-        abi = line.trim();
-        isAbi = false;
-      }
-    }
-    
-    // Clean up
-    fs.removeSync(tempFile);
-    
-    if (!bytecode || !abi) {
-      throw new Error('Failed to extract bytecode or ABI from output');
-    }
-    
-    // Parse ABI from string to JSON
+function directSolcCompile(code, contractName, version) {
     try {
-      const abiJson = JSON.parse(abi);
-      return {
-        bytecode,
-        abi: abiJson
-      };
-    } catch (parseError) {
-      console.error('Failed to parse ABI:', parseError.message);
-      throw parseError;
+      console.log('Attempting direct solc compilation as last resort...');
+      
+      // Create a temporary file
+      const tempDir = os.tmpdir();
+      const tempFile = path.join(tempDir, `${contractName}.sol`);
+      
+      // Write the code to the temporary file
+      fs.writeFileSync(tempFile, code);
+      
+      // Set the version if provided
+      let versionCommand = '';
+      if (version) {
+        versionCommand = `solc-select use ${version} && `;
+      }
+      
+      // Run solc directly with combined output format
+      const output = execSync(`${versionCommand}solc --combined-json abi,bin,bin-runtime ${tempFile}`, {
+        encoding: 'utf8',
+        shell: true
+      });
+      
+      // Parse the output (combined-json format)
+      try {
+        const result = JSON.parse(output);
+        if (!result.contracts || !result.contracts[`${tempFile}:${contractName}`]) {
+          throw new Error(`Contract ${contractName} not found in output`);
+        }
+        
+        const contract = result.contracts[`${tempFile}:${contractName}`];
+        
+        // Clean up
+        fs.removeSync(tempFile);
+        
+        return {
+          bytecode: contract.bin,
+          deployedBytecode: contract['bin-runtime'],
+          abi: JSON.parse(contract.abi)
+        };
+      } catch (parseError) {
+        console.error('Failed to parse solc output:', parseError.message);
+        throw parseError;
+      }
+    } catch (error) {
+      console.error('Direct solc compilation failed:', error.message);
+      throw error;
     }
-  } catch (error) {
-    console.error('Direct solc compilation failed:', error.message);
-    throw error;
   }
-}
-
+  
 /**
  * Try multiple compilation approaches in sequence
  * @param {string} code - Solidity code to compile

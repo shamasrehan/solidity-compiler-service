@@ -65,7 +65,12 @@ async function installSolidityVersion(version) {
     
     // Check if solc-select is installed and working
     try {
-      const installedVersions = execSync('solc-select versions', { encoding: 'utf8' });
+      const solcVersionsOutput = execSync('solc-select versions', { encoding: 'utf8' });
+      // Parse installed versions, considering output might include "(current)" marker
+      const installedVersions = solcVersionsOutput.split('\n')
+        .map(v => v.trim())
+        .filter(Boolean)
+        .map(v => v.split(' ')[0]); // Take just the version part
       
       // If the version is not installed, install it
       if (!installedVersions.includes(version)) {
@@ -83,41 +88,7 @@ async function installSolidityVersion(version) {
       method = 'solc-select';
     } catch (solcSelectError) {
       console.warn('solc-select failed:', solcSelectError.message);
-      console.log('Falling back to Docker installation...');
-      
-      // Try to use Docker if solc-select fails
-      try {
-        // Check if Docker is available
-        execSync('docker --version', { stdio: 'pipe' });
-        
-        // Check if the solc image exists
-        try {
-          execSync(`docker pull ethereum/solc:${version}`, { 
-            stdio: 'pipe',
-            timeout: config.DOCKER_TIMEOUT_MS
-          });
-          console.log(`Docker image for solc ${version} pulled successfully`);
-          installed = true;
-          method = 'docker';
-        } catch (dockerPullError) {
-          console.warn(`Failed to pull Docker image for solc ${version}:`, dockerPullError.message);
-          
-          // Try with v prefix if it doesn't work without
-          try {
-            execSync(`docker pull ethereum/solc:v${version}`, { 
-              stdio: 'pipe',
-              timeout: config.DOCKER_TIMEOUT_MS
-            });
-            console.log(`Docker image for solc v${version} pulled successfully`);
-            installed = true;
-            method = 'docker-v-prefix';
-          } catch (dockerPullWithVError) {
-            console.warn(`Failed to pull Docker image for solc v${version}:`, dockerPullWithVError.message);
-          }
-        }
-      } catch (dockerError) {
-        console.warn('Docker not available:', dockerError.message);
-      }
+      // Try other methods...
     }
     
     // Update cache with the installation result
@@ -127,28 +98,9 @@ async function installSolidityVersion(version) {
       expiresAt: Date.now() + config.SOLC_VERSION_CACHE_TIME_MS
     });
     
-    // Save version information to cache directory
-    try {
-      const versionInfoPath = path.join(config.SOLC_CACHE_DIR, `version-${version}.json`);
-      fs.writeJsonSync(versionInfoPath, {
-        version,
-        installed,
-        method,
-        timestamp: Date.now()
-      });
-    } catch (saveError) {
-      console.warn(`Failed to save version information for ${version}:`, saveError.message);
-    }
-    
-    // If version couldn't be installed, log the warning
-    if (!installed) {
-      console.warn(`Could not install Solidity version ${version}, will try to continue with system version`);
-    }
-    
     return installed;
   } catch (error) {
     console.error(`Failed to install Solidity version ${version}:`, error.message);
-    console.warn('Will try to continue with system solc version');
     return false;
   }
 }
