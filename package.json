@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node index.js",
     "dev": "nodemon index.js",
-    "postinstall": "npm run install-solc-select",
+    "preinstall-deps": "node scripts/preinstall-deps.js",
+    "postinstall": "npm run preinstall-deps",
     "install-solc-select": "pipx install solc-select && solc-select install 0.8.19 && solc-select use 0.8.19",
     "test": "mocha test/*.test.js",
     "test:api": "mocha test/api.test.js",

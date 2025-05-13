@@ -199,7 +199,7 @@ function extractDependenciesFromCode(code) {
  * @returns {Object} Object with installed and failed dependencies
  */
 async function installDependencies(contractDir, dependencies) {
-  if (!dependencies || dependencies.length === 0) return { installed: [], failed: [] };
+  if (!dependencies || dependencies.length === 0) return { success: true, installed: [], failed: [] };
   
   // Create lib directory if it doesn't exist
   const libDir = path.join(contractDir, 'lib');
@@ -208,220 +208,147 @@ async function installDependencies(contractDir, dependencies) {
   const installed = [];
   const failed = [];
   
-  // Track version-specific dependencies separately for special handling
-  const versionedDeps = new Map();
-  dependencies.forEach(dep => {
-    if (dep.includes('@')) {
-      const [repo, version] = dep.split('@');
-      versionedDeps.set(repo, version);
-    }
-  });
-  
-  // Initialize git repository if not already initialized
+  // First, try to install dependencies using npm
   try {
-    if (!fs.existsSync(path.join(contractDir, '.git'))) {
-      execSync('git init', { cwd: contractDir, stdio: 'pipe' });
-      console.log('Git repository initialized');
-    }
-  } catch (error) {
-    console.warn('Failed to initialize git repository, forge install may not work correctly:', error.message);
-  }
-  
-  // Check forge install help to see available options
-  let noCommitOption = '--no-commit';
-  try {
-    const forgeInstallHelp = execSync('forge install --help', { 
-      encoding: 'utf8',
-      stdio: 'pipe'
-    });
-    
-    // If --no-commit is not an option, don't use it
-    if (!forgeInstallHelp.includes('--no-commit')) {
-      noCommitOption = '';
-      console.log('--no-commit option not available, using default commit behavior');
-    }
-  } catch (error) {
-    console.warn('Failed to check forge install options:', error.message);
-    noCommitOption = ''; // Default to not using the option if we can't check
-  }
-  
-  // Process dependencies without versions first
-  for (const dep of dependencies) {
-    // Skip versioned deps in this loop - handle them separately below
-    if (dep.includes('@')) continue;
-    
-    try {
-      // Skip if already installed
-      if (checkDependencyInstalled(contractDir, dep)) {
-        console.log(`Dependency already installed: ${dep}`);
-        installed.push(dep);
-        continue;
-      }
-      
-      // Check if we have a specific version for this dependency
-      if (versionedDeps.has(dep)) {
-        const version = versionedDeps.get(dep);
-        console.log(`Installing dependency with version: ${dep}@${version}`);
-        try {
-          const installCommand = `forge install ${dep}@${version}${noCommitOption ? ' ' + noCommitOption : ''}`;
-          console.log(`Running: ${installCommand}`);
-          
-          execSync(installCommand, { 
-            cwd: contractDir,
-            stdio: 'pipe' 
-          });
-          
-          installed.push(`${dep}@${version}`);
-          console.log(`Successfully installed dependency: ${dep}@${version}`);
-          continue;
-        } catch (versionError) {
-          console.error(`Failed to install versioned dependency ${dep}@${version}:`, versionError.message);
-          // Fall back to installing without version if versioned install fails
-        }
-      }
-      
-      console.log(`Installing dependency: ${dep}`);
-      // Use a more reliable install command based on detected options
-      const installCommand = `forge install ${dep}${noCommitOption ? ' ' + noCommitOption : ''}`;
-      console.log(`Running: ${installCommand}`);
-      
-      execSync(installCommand, { 
-        cwd: contractDir,
-        stdio: 'pipe' 
+    // Create a package.json if it doesn't exist
+    const packageJsonPath = path.join(contractDir, 'package.json');
+    if (!fs.existsSync(packageJsonPath)) {
+      fs.writeJsonSync(packageJsonPath, {
+        name: "temp-contract-dependencies",
+        version: "1.0.0",
+        private: true,
+        dependencies: {}
       });
-      
-      installed.push(dep);
-      console.log(`Successfully installed dependency: ${dep}`);
-    } catch (error) {
-      console.error(`Failed to install dependency ${dep}:`, error.message);
-      
-      // Special handling for OpenZeppelin - try alternative approaches if this fails
-      if (dep === 'OpenZeppelin/openzeppelin-contracts') {
-        try {
-          console.log('Trying alternative installation for OpenZeppelin...');
-          // Try without options
-          execSync(`forge install OpenZeppelin/openzeppelin-contracts`, {
-            cwd: contractDir,
-            stdio: 'pipe'
-          });
-          
-          console.log('OpenZeppelin installed via alternative method');
-          installed.push(dep);
-          continue;
-        } catch (altError) {
-          console.error('Alternative installation also failed:', altError.message);
-          
-          // Try with git clone as last resort
-          try {
-            console.log('Trying git clone for OpenZeppelin...');
-            // Check if we need a specific version
-            const version = versionedDeps.get(dep) || 'master';
-            const gitCommand = `git clone -b ${version} https://github.com/OpenZeppelin/openzeppelin-contracts.git lib/openzeppelin-contracts`;
-            console.log(`Running: ${gitCommand}`);
-            
-            execSync(gitCommand, {
-              cwd: contractDir,
-              stdio: 'pipe'
-            });
-            
-            console.log(`OpenZeppelin installed via git clone using branch/tag: ${version}`);
-            installed.push(version === 'master' ? dep : `${dep}@${version}`);
-            continue;
-          } catch (gitError) {
-            console.error('Git clone also failed:', gitError.message);
+    }
+    
+    // Read existing package.json
+    const packageJson = fs.readJsonSync(packageJsonPath);
+    
+    // Add dependencies to package.json
+    dependencies.forEach(dep => {
+      if (dep.includes('@')) {
+        const [scope, pkg] = dep.split('/');
+        if (scope.startsWith('@')) {
+          // For OpenZeppelin, use a specific version that matches the Solidity version
+          if (scope === '@openzeppelin') {
+            packageJson.dependencies[`${scope}/${pkg}`] = '^4.9.3'; // Latest stable version
+          } else {
+            packageJson.dependencies[`${scope}/${pkg}`] = 'latest';
           }
         }
       }
+    });
+    
+    // Write updated package.json
+    fs.writeJsonSync(packageJsonPath, packageJson, { spaces: 2 });
+    
+    // Install dependencies using npm
+    console.log('Installing npm dependencies...');
+    execSync('npm install', { 
+      cwd: contractDir,
+      stdio: 'pipe'
+    });
+    
+    // Create remappings.txt for solc
+    const remappings = [];
+    for (const dep of dependencies) {
+      if (dep.includes('@')) {
+        const [scope, pkg] = dep.split('/');
+        if (scope.startsWith('@')) {
+          const nodeModulesPath = path.join(contractDir, 'node_modules', scope, pkg);
+          if (fs.existsSync(nodeModulesPath)) {
+            // Add both the full path and the contract-specific path
+            remappings.push(`${scope}/${pkg}=${nodeModulesPath}`);
+            remappings.push(`${scope}/${pkg}/contracts=${path.join(nodeModulesPath, 'contracts')}`);
+            installed.push(dep);
+          }
+        }
+      }
+    }
+    
+    // Write remappings.txt
+    if (remappings.length > 0) {
+      fs.writeFileSync(
+        path.join(contractDir, 'remappings.txt'),
+        remappings.join('\n')
+      );
+    }
+    
+    return { 
+      success: true,
+      installed,
+      failed: []
+    };
+  } catch (npmError) {
+    console.error('npm installation failed:', npmError.message);
+    
+    // If npm installation fails, try forge install as fallback
+    try {
+      // Initialize git repository if not already initialized
+      if (!fs.existsSync(path.join(contractDir, '.git'))) {
+        execSync('git init', { cwd: contractDir, stdio: 'pipe' });
+      }
       
-      // Special handling for other common dependencies
-      if (dep.includes('uniswap') || dep.includes('Uniswap')) {
+      // Install dependencies using forge
+      for (const dep of dependencies) {
         try {
-          console.log(`Trying git clone for ${dep}...`);
-          const version = versionedDeps.get(dep) || 'master';
-          const repoName = dep.split('/')[1];
-          const gitCommand = `git clone -b ${version} https://github.com/${dep}.git lib/${repoName}`;
-          
-          execSync(gitCommand, {
+          console.log(`Installing dependency with forge: ${dep}`);
+          execSync(`forge install ${dep} --no-commit`, { 
             cwd: contractDir,
             stdio: 'pipe'
           });
-          
-          console.log(`${dep} installed via git clone using branch/tag: ${version}`);
-          installed.push(version === 'master' ? dep : `${dep}@${version}`);
-          continue;
-        } catch (gitError) {
-          console.error(`Git clone for ${dep} failed:`, gitError.message);
+          installed.push(dep);
+        } catch (forgeError) {
+          console.error(`Failed to install dependency ${dep}:`, forgeError.message);
+          failed.push({ dep, error: forgeError.message });
         }
       }
       
-      failed.push({ dep, error: error.message });
-    }
-  }
-  
-  // Now process versioned dependencies that haven't been handled yet
-  for (const dep of dependencies) {
-    if (!dep.includes('@') || installed.includes(dep)) continue;
-    
-    try {
-      const [repo, version] = dep.split('@');
-      
-      // Skip if we already installed this repo (with or without version)
-      if (installed.includes(repo) || installed.includes(dep)) {
-        console.log(`Dependency already installed: ${dep}`);
-        continue;
-      }
-      
-      console.log(`Installing versioned dependency: ${dep}`);
-      const installCommand = `forge install ${dep}${noCommitOption ? ' ' + noCommitOption : ''}`;
-      console.log(`Running: ${installCommand}`);
-      
-      execSync(installCommand, { 
-        cwd: contractDir,
-        stdio: 'pipe' 
-      });
-      
-      installed.push(dep);
-      console.log(`Successfully installed dependency: ${dep}`);
-    } catch (error) {
-      console.error(`Failed to install versioned dependency ${dep}:`, error.message);
-      
-      // Special handling for common repositories
-      const [repo, version] = dep.split('@');
-      try {
-        console.log(`Trying git clone for ${repo} version ${version}...`);
-        
-        // For tagged versions in OpenZeppelin, use 'v' prefix if not already present
-        let tagPrefix = '';
-        if (repo.includes('OpenZeppelin') && version !== 'master' && !version.startsWith('v')) {
-          tagPrefix = 'v';
+      // Create remappings.txt for forge installations
+      const forgeRemappings = [];
+      for (const dep of installed) {
+        if (dep.startsWith('OpenZeppelin/')) {
+          forgeRemappings.push(`@openzeppelin/contracts=lib/openzeppelin-contracts/contracts`);
+          forgeRemappings.push(`@openzeppelin/contracts-upgradeable=lib/openzeppelin-contracts-upgradeable/contracts`);
         }
-        
-        const repoName = repo.split('/')[1];
-        const gitCommand = `git clone -b ${tagPrefix}${version} https://github.com/${repo}.git lib/${repoName}`;
-        console.log(`Running: ${gitCommand}`);
-        
-        execSync(gitCommand, {
-          cwd: contractDir,
-          stdio: 'pipe'
-        });
-        
-        console.log(`${repo} ${version} installed via git clone`);
-        installed.push(dep);
-        continue;
-      } catch (gitError) {
-        console.error(`Git clone for version ${version} failed:`, gitError.message);
-        failed.push({ dep, error: gitError.message });
       }
+      
+      if (forgeRemappings.length > 0) {
+        fs.writeFileSync(
+          path.join(contractDir, 'remappings.txt'),
+          forgeRemappings.join('\n')
+        );
+      }
+      
+      return { 
+        success: installed.length > 0,
+        installed,
+        failed
+      };
+    } catch (forgeError) {
+      console.error('forge installation failed:', forgeError.message);
+      
+      // Try manual installation for OpenZeppelin
+      if (dependencies.some(dep => dep.includes('OpenZeppelin'))) {
+        try {
+          const manualResult = await handleOpenZeppelinManually(contractDir, dependencies, { installed, failed });
+          return {
+            success: manualResult.length > 0,
+            installed: manualResult,
+            failed: dependencies.filter(dep => !manualResult.includes(dep))
+          };
+        } catch (manualError) {
+          console.error('Manual installation failed:', manualError.message);
+        }
+      }
+      
+      return { 
+        success: false,
+        installed,
+        failed: dependencies.map(dep => ({ dep, error: forgeError.message }))
+      };
     }
   }
-  
-  // Create remappings file after installing dependencies
-  createRemappingsFile(contractDir, dependencies);
-  
-  // Verify that dependencies are properly installed
-  verifyDependencyInstallation(contractDir, dependencies);
-  
-  return { installed, failed };
 }
 
 /**

@@ -12,8 +12,7 @@ const morgan = require('morgan');
 const cors = require('cors');
 const dotenv = require('dotenv');
 const solcUtils = require('./utils/solcUtils');
-const swaggerUi = require('swagger-ui-express');
-const swaggerJsdoc = require('swagger-jsdoc');
+const { extractDependenciesFromCode, installDependencies } = require('./utils/dependencyUtils');
 
 // Load environment variables from .env file
 dotenv.config();
@@ -31,12 +30,14 @@ const config = {
   RATE_LIMIT_MAX_REQUESTS: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS) || 30, // 30 requests per minute
   ENABLE_REQUEST_LOGGING: process.env.ENABLE_REQUEST_LOGGING === 'true' || false,
   MAX_CONTRACT_SIZE_BYTES: parseInt(process.env.MAX_CONTRACT_SIZE_BYTES) || 1024 * 1024, // 1MB
+  NODE_MODULES_DIR: process.env.NODE_MODULES_DIR || path.join(__dirname, 'node_modules')
 };
 
 // Ensure required directories exist
 fs.ensureDirSync(config.TEMP_DIR);
 fs.ensureDirSync(config.ARTIFACTS_DIR);
 fs.ensureDirSync(config.CACHE_DIR);
+fs.ensureDirSync(config.NODE_MODULES_DIR);
 
 // Create the Express app
 const app = express();
@@ -54,135 +55,20 @@ app.use(bodyParser.json({ limit: `${Math.ceil(config.MAX_CONTRACT_SIZE_BYTES / 1
 
 // Track active compilation jobs and resource cleanup
 const activeCompilations = new Map();
-const compilationHistory = new Map();
-
-// Setup Swagger documentation
-const swaggerOptions = {
-  definition: {
-    openapi: '3.0.0',
-    info: {
-      title: 'Solidity Compiler API',
-      version: '1.0.0',
-      description: 'API for compiling Solidity smart contracts with different compiler versions',
-      contact: {
-        name: 'API Support',
-        email: 'support@example.com',
-      },
-    },
-    servers: [
-      {
-        url: `http://localhost:${config.PORT}`,
-        description: 'Development server',
-      },
-    ],
-  },
-  apis: ['./index.js'], // Path to the API docs
-};
-
-const swaggerDocs = swaggerJsdoc(swaggerOptions);
-app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerDocs));
-
-// In-memory cache for compilation results
 const compilationCache = new Map();
 
-// Cleanup expired cache entries periodically
-const cleanupInterval = setInterval(() => {
-  const now = Date.now();
-  
-  // Clean up expired cache entries
-  for (const [key, value] of compilationCache.entries()) {
-    if (now > value.expiresAt) {
-      compilationCache.delete(key);
-    }
-  }
-  
-  // Clean up old history entries (keep last 100)
-  if (compilationHistory.size > 100) {
-    const sortedEntries = [...compilationHistory.entries()]
-      .sort((a, b) => a[1].timestamp - b[1].timestamp);
-    
-    const entriesToRemove = sortedEntries.slice(0, sortedEntries.length - 100);
-    for (const [key] of entriesToRemove) {
-      compilationHistory.delete(key);
-    }
-  }
-}, 60000); // Run every minute
-
-// index.js - PART 2
-// Graceful shutdown
-process.on('SIGTERM', cleanup);
-process.on('SIGINT', cleanup);
-
-// Add version constant at the top with other config
+// Add version constant
 const VERSION = process.env.API_VERSION || '1.0.0';
 
-/**
- * @swagger
- * /api/health:
- *   get:
- *     summary: Get API health status
- *     description: Returns health information about the API service
- *     responses:
- *       200:
- *         description: Health information
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 status:
- *                   type: string
- *                   example: ok
- *                 version:
- *                   type: string
- *                   example: 1.0.0
- *                 activeJobs:
- *                   type: integer
- *                   example: 0
- *                 cacheSize:
- *                   type: integer
- *                   example: 5
- *                 historySize:
- *                   type: integer
- *                   example: 10
- *                 uptime:
- *                   type: number
- *                   example: 3600
- *                 memory:
- *                   type: object
- *                   properties:
- *                     rss:
- *                       type: string
- *                       example: 50MB
- *                     heapTotal:
- *                       type: string
- *                       example: 20MB
- *                     heapUsed:
- *                       type: string
- *                       example: 15MB
- *                 services:
- *                   type: object
- *                   properties:
- *                     tempDir:
- *                       type: boolean
- *                       example: true
- *                     artifactsDir:
- *                       type: boolean
- *                       example: true
- *                     cacheDir:
- *                       type: boolean
- *                       example: true
- *                     solc:
- *                       type: boolean
- *                       example: true
- */
+// Health endpoint
 app.get('/api/health', async (req, res) => {
   try {
     // Check if critical directories are accessible
     const services = {
       tempDir: await fs.pathExists(config.TEMP_DIR),
       artifactsDir: await fs.pathExists(config.ARTIFACTS_DIR),
-      cacheDir: await fs.pathExists(config.CACHE_DIR)
+      cacheDir: await fs.pathExists(config.CACHE_DIR),
+      nodeModules: await fs.pathExists(config.NODE_MODULES_DIR)
     };
 
     // Check if solc is available
@@ -213,14 +99,12 @@ app.get('/api/health', async (req, res) => {
     // Get active jobs and cache info
     const activeJobs = activeCompilations ? activeCompilations.size : 0;
     const cacheSize = compilationCache ? compilationCache.size : 0;
-    const historySize = compilationHistory ? compilationHistory.size : 0;
 
     res.json({
       status,
       version: VERSION,
       activeJobs,
       cacheSize,
-      historySize,
       uptime: process.uptime(),
       memory: {
         rss: `${Math.round(memoryUsage.rss / 1024 / 1024)}MB`,
@@ -240,140 +124,7 @@ app.get('/api/health', async (req, res) => {
   }
 });
 
-/**
- * @swagger
- * /api/versions:
- *   get:
- *     summary: Get available Solidity compiler versions
- *     description: Returns a list of installed Solidity compiler versions
- *     responses:
- *       200:
- *         description: List of available compiler versions
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 success:
- *                   type: boolean
- *                   example: true
- *                 versions:
- *                   type: array
- *                   items:
- *                     type: string
- *                   example: ["0.8.19", "0.8.20", "0.7.6"]
- *       500:
- *         description: Error fetching compiler versions
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 success:
- *                   type: boolean
- *                   example: false
- *                 error:
- *                   type: string
- *                   example: Failed to fetch compiler versions
- */
-app.get('/api/versions', async (req, res) => {
-  try {
-    // Get installed versions
-    const { stdout } = await execAsync('solc-select versions');
-    const versions = stdout.split('\n')
-      .map(v => v.trim())
-      .filter(Boolean);
-    
-    res.json({
-      success: true,
-      versions
-    });
-  } catch (error) {
-    console.error('Error fetching compiler versions:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Failed to fetch compiler versions',
-      details: process.env.NODE_ENV === 'development' ? error.message : undefined
-    });
-  }
-});
-
-/**
- * @swagger
- * /api/compile:
- *   post:
- *     summary: Compile Solidity code
- *     description: Compiles Solidity source code with specified version and settings
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             required:
- *               - source
- *               - version
- *             properties:
- *               source:
- *                 type: string
- *                 description: Solidity source code
- *               version:
- *                 type: string
- *                 description: Solidity compiler version
- *               settings:
- *                 type: object
- *                 properties:
- *                   optimizer:
- *                     type: object
- *                     properties:
- *                       enabled:
- *                         type: boolean
- *                       runs:
- *                         type: integer
- *                   evmVersion:
- *                     type: string
- *                   outputSelection:
- *                     type: object
- *     responses:
- *       200:
- *         description: Compilation successful
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 success:
- *                   type: boolean
- *                   example: true
- *                 jobId:
- *                   type: string
- *                 compiled:
- *                   type: object
- *       400:
- *         description: Invalid request parameters
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 success:
- *                   type: boolean
- *                   example: false
- *                 error:
- *                   type: string
- *       500:
- *         description: Compilation error
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 success:
- *                   type: boolean
- *                   example: false
- *                 error:
- *                   type: string
- */
+// Compile endpoint
 app.post('/api/compile', async (req, res) => {
   let jobId = null;
   let tempDir = null;
@@ -392,7 +143,7 @@ app.post('/api/compile', async (req, res) => {
     if (!version) {
       return res.status(400).json({ 
         success: false, 
-        error: 'Compiler version is requiredxx' 
+        error: 'Compiler version is required' 
       });
     }
     
@@ -447,8 +198,25 @@ app.post('/api/compile', async (req, res) => {
       tempDir,
       source: source.substring(0, 100) + (source.length > 100 ? '...' : ''),
       version,
-      settings: JSON.stringify(settings).substring(0, 100) + (JSON.stringify(settings).length > 100 ? '...' : '')
+      settings: settings ? JSON.stringify(settings).substring(0, 100) + (JSON.stringify(settings).length > 100 ? '...' : '') : ''
     });
+    
+    // Extract dependencies from source code
+    const dependencies = extractDependenciesFromCode(source);
+    
+    // Install dependencies if any are found
+    if (dependencies.length > 0) {
+      activeCompilations.set(jobId, {
+        ...activeCompilations.get(jobId),
+        status: 'installing_dependencies'
+      });
+      
+      const installResult = await installDependencies(tempDir, dependencies);
+      
+      if (!installResult.success) {
+        throw new Error(`Failed to install dependencies: ${installResult.error}`);
+      }
+    }
     
     // Ensure the requested compiler version is installed
     const installed = await solcUtils.installSolidityVersion(version);
@@ -490,15 +258,6 @@ app.post('/api/compile', async (req, res) => {
     await fs.writeFile(path.join(artifactDir, 'source.sol'), source);
     await fs.writeJson(path.join(artifactDir, 'result.json'), compilationResult, { spaces: 2 });
     
-    // Store in history
-    compilationHistory.set(jobId, {
-      timestamp: Date.now(),
-      status: 'success',
-      contractName,
-      version,
-      settings: settings || {}
-    });
-    
     // Store in cache
     compilationCache.set(customCacheKey, {
       jobId,
@@ -530,191 +289,6 @@ app.post('/api/compile', async (req, res) => {
     });
   } catch (error) {
     handleCompilationError(jobId, error, res);
-  }
-});
-
-/**
- * @swagger
- * /api/history/:jobId/source:
- *   get:
- *     summary: Get source code for a specific job
- *     description: Returns the source code for a specific job
- *     parameters:
- *       - in: path
- *         name: jobId
- *         required: true
- *         schema:
- *           type: string
- *         description: ID of the compilation job
- *     responses:
- *       200:
- *         description: Source code
- *         content:
- *           text/plain:
- *             schema:
- *               type: string
- *       404:
- *         description: Job or source not found
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 success:
- *                   type: boolean
- *                   example: false
- *                 error:
- *                   type: string
- *                   example: Source code not found
- */
-app.get('/api/history', async (req, res) => {
-  try {
-    const limit = parseInt(req.query.limit) || 10;
-    const history = [];
-    
-    // Convert the history map to an array and sort by timestamp (latest first)
-    const sortedEntries = [...compilationHistory.entries()]
-      .sort((a, b) => b[1].timestamp - a[1].timestamp)
-      .slice(0, limit);
-    
-    for (const [id, data] of sortedEntries) {
-      history.push({
-        id,
-        ...data
-      });
-    }
-    
-    res.json({
-      success: true,
-      history
-    });
-  } catch (error) {
-    console.error('Error fetching history:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Failed to fetch history',
-      details: process.env.NODE_ENV === 'development' ? error.message : undefined
-    });
-  }
-});
-
-app.get('/api/history/:jobId', async (req, res) => {
-  const { jobId } = req.params;
-  
-  try {
-    if (!compilationHistory.has(jobId)) {
-      return res.status(404).json({
-        success: false,
-        error: 'Job not found'
-      });
-    }
-    
-    const jobInfo = compilationHistory.get(jobId);
-    
-    res.json({
-      success: true,
-      id: jobId,
-      ...jobInfo
-    });
-  } catch (error) {
-    console.error(`Error fetching details for job ${jobId}:`, error);
-    res.status(500).json({
-      success: false,
-      error: 'Failed to fetch job details',
-      details: process.env.NODE_ENV === 'development' ? error.message : undefined
-    });
-  }
-});
-
-// Fix status endpoint
-app.get('/api/status', async (req, res) => {
-  try {
-    const activeJobs = [];
-    
-    for (const [id, data] of activeCompilations.entries()) {
-      activeJobs.push({
-        id,
-        ...data
-      });
-    }
-    
-    res.json({
-      success: true,
-      activeJobs,
-      count: activeJobs.length
-    });
-  } catch (error) {
-    console.error('Error fetching active jobs:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Failed to fetch active jobs',
-      details: process.env.NODE_ENV === 'development' ? error.message : undefined
-    });
-  }
-});
-
-/**
- * @swagger
- * /api/history/{jobId}/result:
- *   get:
- *     summary: Get compilation result for a specific job
- *     description: Returns the compilation result for a specific job
- *     parameters:
- *       - in: path
- *         name: jobId
- *         required: true
- *         schema:
- *           type: string
- *         description: ID of the compilation job
- *     responses:
- *       200:
- *         description: Compilation result
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *       404:
- *         description: Job or result not found
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 success:
- *                   type: boolean
- *                   example: false
- *                 error:
- *                   type: string
- *                   example: Result not found
- */
-app.get('/api/history/:jobId/result', async (req, res) => {
-  const { jobId } = req.params;
-  
-  try {
-    const resultPath = path.join(config.ARTIFACTS_DIR, jobId, 'result.json');
-    
-    if (!await fs.pathExists(resultPath)) {
-      return res.status(404).json({
-        success: false,
-        error: 'Result not found'
-      });
-    }
-    
-    const result = JSON.parse(
-      await fs.readFile(resultPath, 'utf8')
-    );
-    
-    res.json({
-      success: true,
-      result
-    });
-  } catch (error) {
-    console.error(`Error fetching result for ${jobId}:`, error);
-    res.status(500).json({
-      success: false,
-      error: 'Failed to fetch compilation result',
-      details: process.env.NODE_ENV === 'development' ? error.message : undefined
-    });
   }
 });
 
@@ -777,15 +351,7 @@ function handleCompilationError(jobId, error, res) {
   }
   
   // If this was a tracked job, save error information
-  if (jobId && compilationHistory) {
-    compilationHistory.set(jobId, {
-      timestamp: Date.now(),
-      status: 'failed',
-      error: errorMessage,
-      errorType
-    });
-    
-    // Save error information to artifacts directory
+  if (jobId) {
     try {
       const artifactDir = path.join(config.ARTIFACTS_DIR, jobId);
       fs.ensureDirSync(artifactDir);
@@ -810,37 +376,14 @@ function handleCompilationError(jobId, error, res) {
   });
 }
 
-/**
- * Clean up resources during shutdown
- */
-async function cleanup() {
-  console.log('Shutting down, cleaning up resources...');
-  
-  // Clear the cleanup interval
-  clearInterval(cleanupInterval);
-  
-  // Clean up all temp directories
-  try {
-    console.log(`Removing temporary directory: ${config.TEMP_DIR}`);
-    await fs.remove(config.TEMP_DIR);
-  } catch (error) {
-    console.error('Error cleaning up temp directory:', error);
-  }
-  
-  // Force exit after a delay to ensure cleanup
-  setTimeout(() => {
-    process.exit(0);
-  }, 1000);
-}
-
 // Start the server
 app.listen(config.PORT, () => {
   console.log(`Solidity compiler API server running on port ${config.PORT}`);
-  console.log(`API documentation available at http://localhost:${config.PORT}/api-docs`);
   console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
   console.log(`Temp directory: ${config.TEMP_DIR}`);
   console.log(`Artifacts directory: ${config.ARTIFACTS_DIR}`);
   console.log(`Cache directory: ${config.CACHE_DIR}`);
+  console.log(`Node modules directory: ${config.NODE_MODULES_DIR}`);
 });
 
 module.exports = app;

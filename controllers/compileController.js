@@ -1,6 +1,9 @@
 const fs = require('fs-extra');
 const path = require('path');
 const { execSync } = require('child_process');
+const os = require('os');
+const crypto = require('crypto');
+const config = require('../config');
 
 // Get paths from parent module
 const TEMP_DIR = path.join(__dirname, '../temp');
@@ -13,7 +16,10 @@ const {
   installSolidityVersion,
   compileSolidityWithSolc,
   compileSolidityWithStandardInput,
-  compileWithFallbackMethod
+  compileWithFallbackMethod,
+  ErrorTypes,
+  createCompilationError,
+  parseSolcError
 } = require('../utils/solcUtils');
 const { 
   extractDependenciesFromCode, 
@@ -29,6 +35,167 @@ const {
   checkFoundryInstallation,
   verifyDependencyInstallation
 } = require('../utils/foundryUtils');
+
+// Error categories for better error handling
+const ErrorCategories = {
+  VALIDATION: 'validation',
+  COMPILATION: 'compilation',
+  DEPENDENCY: 'dependency',
+  VERSION: 'version',
+  SYSTEM: 'system'
+};
+
+// Error subcategories for more specific error handling
+const ErrorSubcategories = {
+  // Validation errors
+  INVALID_REQUEST: 'invalid_request',
+  MISSING_FIELDS: 'missing_fields',
+  INVALID_FORMAT: 'invalid_format',
+  
+  // Compilation errors
+  SYNTAX_ERROR: 'syntax_error',
+  IMPORT_ERROR: 'import_error',
+  TYPE_ERROR: 'type_error',
+  REFERENCE_ERROR: 'reference_error',
+  
+  // Dependency errors
+  MISSING_DEPENDENCY: 'missing_dependency',
+  VERSION_MISMATCH: 'version_mismatch',
+  
+  // Version errors
+  INVALID_SOLIDITY_VERSION: 'invalid_solidity_version',
+  INVALID_EVM_VERSION: 'invalid_evm_version',
+  
+  // System errors
+  COMPILER_ERROR: 'compiler_error',
+  FILE_SYSTEM_ERROR: 'file_system_error',
+  PERMISSION_ERROR: 'permission_error'
+};
+
+/**
+ * Format error response with proper structure
+ * @param {Error} error - Error object
+ * @param {string} category - Error category
+ * @param {string} subcategory - Error subcategory
+ * @returns {Object} Formatted error response
+ */
+function formatErrorResponse(error, category, subcategory) {
+  return {
+    success: false,
+    error: {
+      message: error.message,
+      category,
+      subcategory,
+      type: error.name || 'Error',
+      details: error.details || {},
+      timestamp: new Date().toISOString()
+    }
+  };
+}
+
+/**
+ * Validate compilation request
+ * @param {Object} body - Request body
+ * @returns {Object|null} Error object if validation fails, null if valid
+ */
+function validateCompilationRequest(body) {
+  const { source, version, settings } = body;
+
+  // Check required fields
+  if (!source) {
+    return createCompilationError(
+      'Source code is required',
+      ErrorTypes.VALIDATION_ERROR,
+      { field: 'source' }
+    );
+  }
+
+  // Validate source code format
+  if (typeof source !== 'string' || source.trim().length === 0) {
+    return createCompilationError(
+      'Source code must be a non-empty string',
+      ErrorTypes.VALIDATION_ERROR,
+      { field: 'source' }
+    );
+  }
+
+  // Validate Solidity version format
+  if (version && !version.match(/^\d+\.\d+\.\d+$/)) {
+    return createCompilationError(
+      'Invalid Solidity version format. Must be in format X.Y.Z (e.g., 0.8.17)',
+      ErrorTypes.VERSION_ERROR,
+      { field: 'version', value: version }
+    );
+  }
+
+  // Validate settings if provided
+  if (settings) {
+    if (typeof settings !== 'object') {
+      return createCompilationError(
+        'Settings must be an object',
+        ErrorTypes.VALIDATION_ERROR,
+        { field: 'settings' }
+      );
+    }
+
+    // Validate EVM version if provided
+    if (settings.evmVersion && typeof settings.evmVersion !== 'string') {
+      return createCompilationError(
+        'EVM version must be a string',
+        ErrorTypes.VALIDATION_ERROR,
+        { field: 'settings.evmVersion' }
+      );
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Categorize compilation error
+ * @param {Error} error - Error object
+ * @returns {Object} Error category and subcategory
+ */
+function categorizeError(error) {
+  const errorMessage = error.message.toLowerCase();
+  
+  // Validation errors
+  if (error.name === 'ValidationError' || errorMessage.includes('required') || errorMessage.includes('invalid format')) {
+    return {
+      category: ErrorCategories.VALIDATION,
+      subcategory: ErrorSubcategories.INVALID_REQUEST
+    };
+  }
+
+  // Compilation errors
+  if (errorMessage.includes('parser error') || errorMessage.includes('syntax error')) {
+    return {
+      category: ErrorCategories.COMPILATION,
+      subcategory: ErrorSubcategories.SYNTAX_ERROR
+    };
+  }
+
+  if (errorMessage.includes('import') || errorMessage.includes('not found')) {
+    return {
+      category: ErrorCategories.DEPENDENCY,
+      subcategory: ErrorSubcategories.MISSING_DEPENDENCY
+    };
+  }
+
+  // Version errors
+  if (errorMessage.includes('version') || errorMessage.includes('solidity')) {
+    return {
+      category: ErrorCategories.VERSION,
+      subcategory: ErrorSubcategories.INVALID_SOLIDITY_VERSION
+    };
+  }
+
+  // Default to system error
+  return {
+    category: ErrorCategories.SYSTEM,
+    subcategory: ErrorSubcategories.COMPILER_ERROR
+  };
+}
 
 /**
  * Find JSON files recursively in a directory
@@ -232,3 +399,117 @@ async function compileWithFoundry(contractDir, contractName, outputDir, dependen
     message: 'Contract compiled successfully with Foundry'
   };
 }
+
+async function compileContract(req, res) {
+  const jobId = crypto.randomBytes(16).toString('hex');
+  const { source, version = '0.8.19', settings = {} } = req.body;
+
+  try {
+    // Validate request
+    const validationError = validateCompilationRequest(req.body);
+    if (validationError) {
+      return res.status(400).json(formatErrorResponse(
+        validationError,
+        ErrorCategories.VALIDATION,
+        ErrorSubcategories.INVALID_REQUEST
+      ));
+    }
+
+    // Update job status to processing
+    updateJobStatus(jobId, 'processing', {
+      source: source.substring(0, 100) + (source.length > 100 ? '...' : ''),
+      version,
+      settings: settings ? JSON.stringify(settings).substring(0, 100) + (JSON.stringify(settings).length > 100 ? '...' : '') : ''
+    });
+
+    // Extract contract name from source
+    const contractName = extractContractName(source);
+    if (!contractName) {
+      const error = createCompilationError(
+        'Could not determine contract name from source code',
+        ErrorTypes.VALIDATION_ERROR,
+        { field: 'source' }
+      );
+      return res.status(400).json(formatErrorResponse(
+        error,
+        ErrorCategories.VALIDATION,
+        ErrorSubcategories.INVALID_FORMAT
+      ));
+    }
+
+    // Create a temporary directory for compilation
+    const tempDir = path.join(os.tmpdir(), `solc-compile-${jobId}`);
+    fs.ensureDirSync(tempDir);
+
+    // Write the source code to a temporary file
+    const sourceFile = path.join(tempDir, `${contractName}.sol`);
+    fs.writeFileSync(sourceFile, source);
+
+    // Copy remappings.txt from project root if it exists
+    const projectRemappingsPath = path.join(__dirname, '..', 'remappings.txt');
+    if (fs.existsSync(projectRemappingsPath)) {
+      fs.copyFileSync(projectRemappingsPath, path.join(tempDir, 'remappings.txt'));
+    }
+
+    // Compile the contract
+    const result = await compileWithFallbackMethod(source, contractName, version, settings, tempDir);
+
+    // Clean up temporary files
+    if (config.CLEANUP_TEMP_FILES) {
+      fs.removeSync(tempDir);
+    }
+
+    // Update job status to completed
+    updateJobStatus(jobId, 'completed', {
+      contractName,
+      bytecode: result.bytecode.substring(0, 100) + '...',
+      abi: JSON.stringify(result.abi).substring(0, 100) + '...'
+    });
+
+    // Return successful response
+    res.json({
+      success: true,
+      jobId,
+      result: {
+        contractName,
+        bytecode: result.bytecode,
+        abi: result.abi,
+        metadata: result.metadata,
+        compilerVersion: version,
+        evmVersion: settings.evmVersion || 'london'
+      }
+    });
+
+  } catch (error) {
+    console.error('Compilation error:', error);
+    
+    // Categorize the error
+    const { category, subcategory } = categorizeError(error);
+    
+    // Update job status to failed
+    updateJobStatus(jobId, 'failed', {
+      error: error.message,
+      errorType: error.name,
+      category,
+      subcategory
+    });
+
+    // Return formatted error response
+    res.status(500).json(formatErrorResponse(
+      error,
+      category,
+      subcategory
+    ));
+  }
+}
+
+function updateJobStatus(jobId, status, details = {}) {
+  // Implementation of job status tracking
+  console.log(`Job ${jobId} status: ${status}`, details);
+}
+
+module.exports = {
+  compileContract,
+  ErrorCategories,
+  ErrorSubcategories
+};

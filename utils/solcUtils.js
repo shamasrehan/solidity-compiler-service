@@ -29,6 +29,62 @@ const installedVersionsCache = new Map();
 // Track created resources that need cleanup
 const createdResources = new Set();
 
+// Add EVM version mapping
+const EVM_VERSION_MAP = {
+  '0.8.0': 'berlin',
+  '0.8.1': 'berlin',
+  '0.8.2': 'berlin',
+  '0.8.3': 'berlin',
+  '0.8.4': 'berlin',
+  '0.8.5': 'berlin',
+  '0.8.6': 'berlin',
+  '0.8.7': 'berlin',
+  '0.8.8': 'berlin',
+  '0.8.9': 'berlin',
+  '0.8.10': 'berlin',
+  '0.8.11': 'berlin',
+  '0.8.12': 'berlin',
+  '0.8.13': 'berlin',
+  '0.8.14': 'berlin',
+  '0.8.15': 'berlin',
+  '0.8.16': 'berlin',
+  '0.8.17': 'london',
+  '0.8.18': 'london',
+  '0.8.19': 'london',
+  '0.8.20': 'paris',
+  '0.8.21': 'paris',
+  '0.8.22': 'paris',
+  '0.8.23': 'paris',
+  '0.8.24': 'paris',
+  '0.8.25': 'paris',
+  '0.9.0': 'paris',
+  '0.9.1': 'paris',
+  '0.9.2': 'paris',
+  '0.9.3': 'paris',
+  '0.9.4': 'paris',
+  '0.9.5': 'paris',
+  '0.9.6': 'paris',
+  '0.9.7': 'paris',
+  '0.9.8': 'paris',
+  '0.9.9': 'paris',
+  '0.9.10': 'paris',
+  '0.9.11': 'paris',
+  '0.9.12': 'paris',
+  '0.9.13': 'paris',
+  '0.9.14': 'paris',
+  '0.9.15': 'paris',
+  '0.9.16': 'paris',
+  '0.9.17': 'paris',
+  '0.9.18': 'paris',
+  '0.9.19': 'paris',
+  '0.9.20': 'paris',
+  '0.9.21': 'paris',
+  '0.9.22': 'paris',
+  '0.9.23': 'paris',
+  '0.9.24': 'paris',
+  '0.9.25': 'paris'
+};
+
 /**
  * Install a specific Solidity compiler version
  * @param {string} version - Solidity version to install
@@ -175,6 +231,38 @@ function extractSolidityVersion(code) {
     return config.DEFAULT_COMPILER_VERSION; // Default fallback
   }
 }
+
+/**
+ * Get the appropriate EVM version for a given Solidity version
+ * @param {string} solidityVersion - Solidity compiler version
+ * @returns {string} Appropriate EVM version
+ */
+function getEVMVersionForSolidity(solidityVersion) {
+  // If version is provided in settings, use it
+  if (solidityVersion) {
+    // Check if we have a specific mapping for this version
+    if (EVM_VERSION_MAP[solidityVersion]) {
+      return EVM_VERSION_MAP[solidityVersion];
+    }
+    
+    // For versions not in our map, use a default based on major.minor
+    const [major, minor] = solidityVersion.split('.');
+    const versionKey = `${major}.${minor}`;
+    
+    // Use appropriate EVM version based on version range
+    if (parseFloat(versionKey) >= 0.9) {
+      return 'paris';
+    } else if (parseFloat(versionKey) >= 0.8) {
+      return 'london';
+    } else {
+      return 'berlin';
+    }
+  }
+  
+  // Default to london if no version specified
+  return 'london';
+}
+
 // utils/solcUtils.js - PART 2
 
 /**
@@ -228,143 +316,81 @@ function runSolcWithDocker(inputFile, version, timeout = config.DOCKER_TIMEOUT_M
 
 /**
  * Compile Solidity with solc directly
- * @param {string} contractPath - Path to the contract file
+ * @param {string} source - Solidity source code
  * @param {string} contractName - Name of the contract
  * @param {string} compilerVersion - Solidity compiler version
  * @param {Object} settings - Compiler settings
  * @returns {Object} Object with bytecode and ABI
  */
-function compileSolidityWithSolc(contractPath, contractName, compilerVersion, settings = {}) {
-  const createdFiles = []; // Track created files for cleanup
+function compileSolidityWithSolc(source, contractName, compilerVersion, settings = {}, tempDir) {
+  const createdPaths = []; // Track created files and directories for cleanup
   
   try {
-    console.log(`Compiling ${contractPath} with solc directly (version ${compilerVersion})`);
+    console.log(`Compiling ${contractName} with solc directly (version ${compilerVersion})`);
     
-    // Make sure the solc version is set
-    if (compilerVersion) {
-      try {
-        execSync(`solc-select use ${compilerVersion}`, { 
-          stdio: 'pipe',
-          timeout: config.SOLC_SELECT_TIMEOUT_MS
-        });
-      } catch (error) {
-        console.warn(`Failed to set solc version to ${compilerVersion}:`, error.message);
-      }
+    // First check if we have a cached result
+    const cacheResult = getCachedCompilationResult(source, compilerVersion, settings);
+    if (cacheResult) {
+      console.log('Using cached compilation result');
+      return cacheResult;
     }
     
-    // Use standard-json instead of combined-json to be safer
-    const inputJson = {
-      language: "Solidity",
-      sources: {
-        [path.basename(contractPath)]: {
-          content: fs.readFileSync(contractPath, 'utf8')
-        }
-      },
-      settings: {
-        outputSelection: {
-          "*": {
-            "*": ["abi", "evm.bytecode.object", "evm.deployedBytecode.object", "metadata"]
-          }
-        },
-        optimizer: settings.optimizer || {
-          enabled: true,
-          runs: 200
-        },
-        evmVersion: settings.evmVersion || "paris"
-      }
-    };
-    
-    // Write input to a temp file
-    const inputFile = path.join(path.dirname(contractPath), 'input.json');
-    fs.writeFileSync(inputFile, JSON.stringify(inputJson));
-    createdFiles.push(inputFile);
-    createdResources.add(inputFile);
-    
-    let output;
-    
-    try {
-      // Try running solc directly
-      output = execSync(`solc --standard-json ${inputFile}`, {
-        encoding: 'utf8',
-        timeout: config.MAX_COMPILATION_TIME_MS
-      });
-    } catch (directSolcError) {
-      console.warn('Direct solc command failed:', directSolcError.message);
-      
-      // Try with Docker if direct solc fails and we have a specific compiler version
-      if (compilerVersion) {
-        console.log(`Trying compilation with Docker using solc ${compilerVersion}...`);
-        output = runSolcWithDocker(inputFile, compilerVersion);
-      } else {
-        // Clean up created files before throwing
-        cleanupCreatedFiles(createdFiles);
-        throw directSolcError;
-      }
+    // Create a temporary directory if not provided
+    if (!tempDir) {
+      tempDir = path.join(os.tmpdir(), `solc-compile-${crypto.randomBytes(8).toString('hex')}`);
+      fs.ensureDirSync(tempDir);
+      createdPaths.push(tempDir);
+      createdResources.add(tempDir);
     }
+    
+    // Create a temporary file for the contract
+    const contractFile = path.join(tempDir, `${contractName}.sol`);
+    fs.writeFileSync(contractFile, source);
+    createdPaths.push(contractFile);
+    createdResources.add(contractFile);
+    
+    // Get appropriate EVM version
+    const evmVersion = settings.evmVersion || getEVMVersionForSolidity(compilerVersion);
+    
+    // Read remappings from project root
+    let remappings = [];
+    const projectRemappingsPath = path.join(__dirname, '..', 'remappings.txt');
+    if (fs.existsSync(projectRemappingsPath)) {
+      remappings = fs.readFileSync(projectRemappingsPath, 'utf8').split('\n').filter(Boolean);
+    }
+    
+    // Add base path and allow paths
+    const libPath = path.join(__dirname, '..', 'lib');
+    const basePathArg = `--base-path ${libPath}`;
+    const allowPathsArg = `--allow-paths ${libPath}`;
+    
+    // Construct the command with proper flags
+    const command = `solc ${contractFile} --abi --bin --optimize ${basePathArg} ${allowPathsArg}`;
+    console.log('Executing command:', command);
+    
+    const output = execSync(command, {
+      encoding: 'utf8',
+      timeout: config.MAX_COMPILATION_TIME_MS
+    });
     
     // Parse the output
-    const compiledOutput = JSON.parse(output);
+    const result = parseSolcOutput(output, contractName);
     
-    // Check for errors
-    if (compiledOutput.errors && compiledOutput.errors.some(e => e.severity === 'error')) {
-      const errors = compiledOutput.errors
-        .filter(e => e.severity === 'error')
-        .map(e => e.formattedMessage || e.message)
-        .join('\n');
-      
-      // Clean up created files before throwing
-      cleanupCreatedFiles(createdFiles);
-      throw new Error(`Compilation errors: ${errors}`);
-    }
+    // Cache the result
+    cacheCompilationResult(source, compilerVersion, settings, result);
     
-    // Find the contract in the output
-    const fileName = path.basename(contractPath);
-    if (!compiledOutput.contracts || !compiledOutput.contracts[fileName] || !compiledOutput.contracts[fileName][contractName]) {
-      // Clean up created files before throwing
-      cleanupCreatedFiles(createdFiles);
-      throw new Error(`Contract ${contractName} not found in compilation output`);
-    }
-    
-    const contract = compiledOutput.contracts[fileName][contractName];
-    
-    // Save compilation output for debugging purposes to the cache directory
-    const outputHash = crypto.createHash('sha256').update(output).digest('hex');
-    const outputFile = path.join(config.SOLC_CACHE_DIR, `${contractName}_${outputHash.substring(0, 8)}.json`);
-    fs.writeFileSync(outputFile, output);
-    createdFiles.push(outputFile);
-    createdResources.add(outputFile);
-    
-    // Cache the successful compilation
-    cacheCompilationResult(
-      fs.readFileSync(contractPath, 'utf8'),
-      compilerVersion,
-      settings,
-      {
-        bytecode: contract.evm.bytecode.object,
-        deployedBytecode: contract.evm.deployedBytecode.object,
-        abi: contract.abi,
-        metadata: contract.metadata
-      }
-    );
-    
-    // Clean up temporary input file, but keep the output file for reference
+    // Clean up created files and directories
     if (config.CLEANUP_TEMP_FILES) {
-      cleanupCreatedFiles([inputFile]);
+      cleanupCreatedFiles(createdPaths);
     }
     
-    return {
-      bytecode: contract.evm.bytecode.object,
-      deployedBytecode: contract.evm.deployedBytecode.object,
-      abi: contract.abi,
-      metadata: contract.metadata
-    };
+    return result;
   } catch (error) {
-    // Make sure to clean up files even in case of error
+    // Clean up created files and directories
     if (config.CLEANUP_TEMP_FILES) {
-      cleanupCreatedFiles(createdFiles);
+      cleanupCreatedFiles(createdPaths);
     }
-    console.error(`Failed to compile Solidity contract:`, error.message);
-    throw error;
+    throw new Error(`Compilation errors: ${error.message}`);
   }
 }
 
@@ -376,7 +402,7 @@ function compileSolidityWithSolc(contractPath, contractName, compilerVersion, se
  * @param {Object} settings - Compiler settings
  * @returns {Object} Object with bytecode and ABI
  */
-function compileSolidityWithStandardInput(source, contractName, compilerVersion, settings = {}) {
+function compileSolidityWithStandardInput(source, contractName, compilerVersion, settings = {}, tempDir) {
   const createdPaths = []; // Track created files and directories for cleanup
   
   try {
@@ -389,18 +415,29 @@ function compileSolidityWithStandardInput(source, contractName, compilerVersion,
       return cacheResult;
     }
     
-    // Create a temporary directory
-    const tempDirId = crypto.randomBytes(8).toString('hex');
-    const tempDir = path.join(os.tmpdir(), `solc-compile-${tempDirId}`);
-    fs.ensureDirSync(tempDir);
-    createdPaths.push(tempDir);
-    createdResources.add(tempDir);
+    // Create a temporary directory if not provided
+    if (!tempDir) {
+      tempDir = path.join(os.tmpdir(), `solc-compile-${crypto.randomBytes(8).toString('hex')}`);
+      fs.ensureDirSync(tempDir);
+      createdPaths.push(tempDir);
+      createdResources.add(tempDir);
+    }
     
     // Create a temporary file for the contract
     const contractFile = path.join(tempDir, `${contractName}.sol`);
     fs.writeFileSync(contractFile, source);
     createdPaths.push(contractFile);
     createdResources.add(contractFile);
+    
+    // Get appropriate EVM version
+    const evmVersion = settings.evmVersion || getEVMVersionForSolidity(compilerVersion);
+    
+    // Read remappings from project root
+    let remappings = [];
+    const projectRemappingsPath = path.join(__dirname, '..', 'remappings.txt');
+    if (fs.existsSync(projectRemappingsPath)) {
+      remappings = fs.readFileSync(projectRemappingsPath, 'utf8').split('\n').filter(Boolean);
+    }
     
     // Use standard-json format
     const inputJson = {
@@ -411,16 +448,17 @@ function compileSolidityWithStandardInput(source, contractName, compilerVersion,
         }
       },
       settings: {
+        optimizer: {
+          enabled: settings.optimizer?.enabled || false,
+          runs: settings.optimizer?.runs || 200
+        },
+        evmVersion: evmVersion,
         outputSelection: {
           "*": {
             "*": ["abi", "evm.bytecode.object", "evm.deployedBytecode.object", "metadata"]
           }
         },
-        optimizer: settings.optimizer || {
-          enabled: true,
-          runs: 200
-        },
-        evmVersion: settings.evmVersion || "paris"
+        remappings: remappings
       }
     };
     
@@ -446,7 +484,16 @@ function compileSolidityWithStandardInput(source, contractName, compilerVersion,
           execSync(`solc-select use ${compilerVersion}`, { stdio: 'pipe' });
         }
         
-        output = execSync(`solc --standard-json ${inputFile}`, {
+        // Add base path and allow paths
+        const libPath = path.join(__dirname, '..', 'lib');
+        const basePathArg = `--base-path ${libPath}`;
+        const allowPathsArg = `--allow-paths ${libPath}`;
+        
+        // Construct the command with proper flags
+        const command = `solc --standard-json ${inputFile} ${basePathArg} ${allowPathsArg}`;
+        console.log('Executing command:', command);
+        
+        output = execSync(command, {
           encoding: 'utf8',
           timeout: config.MAX_COMPILATION_TIME_MS
         });
@@ -459,7 +506,6 @@ function compileSolidityWithStandardInput(source, contractName, compilerVersion,
         throw new Error(`Compilation with solc-select failed: ${solcSelectError.message}`);
       }
     }
-    // utils/solcUtils.js - PART 3
     
     // Parse the output
     const compiledOutput = JSON.parse(output);
@@ -527,186 +573,71 @@ function compileSolidityWithStandardInput(source, contractName, compilerVersion,
  * @param {Object} settings - Compiler settings
  * @returns {Promise<Object>} Compilation result with bytecode and ABI
  */
-async function compileWithFallbackMethod(source, contractName, compilerVersion, settings = {}) {
+async function compileWithFallbackMethod(source, contractName, compilerVersion, settings = {}, tempDir) {
+  const methods = [
+    {
+      name: 'standard-input',
+      fn: () => compileSolidityWithStandardInput(source, contractName, compilerVersion, settings, tempDir)
+    },
+    {
+      name: 'direct',
+      fn: () => compileSolidityWithSolc(source, contractName, compilerVersion, settings, tempDir)
+    },
+    {
+      name: 'temp-file',
+      fn: () => compileSolidityWithTempFile(source, contractName, compilerVersion, settings, tempDir)
+    },
+    {
+      name: 'docker-direct',
+      fn: () => compileSolidityWithDockerDirect(source, contractName, compilerVersion, settings, tempDir)
+    }
+  ];
+
   const errors = [];
-  
-  // First check if we have a cached result
-  const cacheResult = getCachedCompilationResult(source, compilerVersion, settings);
-  if (cacheResult) {
-    console.log('Using cached compilation result from fallback method');
-    return cacheResult;
+  const compilationSettings = {
+    ...settings,
+    evmVersion: settings.evmVersion || getEVMVersionForSolidity(compilerVersion)
+  };
+
+  // Ensure lib directory exists
+  const libDir = path.join(__dirname, '..', 'lib');
+  if (!fs.existsSync(libDir)) {
+    fs.ensureDirSync(libDir);
   }
-  
-  // Try standard input method first
-  try {
-    console.log('Attempting compilation with standard input...');
-    return compileSolidityWithStandardInput(source, contractName, compilerVersion, settings);
-  } catch (standardInputError) {
-    console.warn('Standard input compilation failed:', standardInputError.message);
-    errors.push({ method: 'standard-input', error: standardInputError.message });
+
+  // Ensure temp directory exists
+  if (!tempDir) {
+    tempDir = path.join(os.tmpdir(), `solc-compile-${crypto.randomBytes(8).toString('hex')}`);
   }
-  
-  // If that fails, try creating a temporary file and using the direct method
-  try {
-    console.log('Attempting compilation with temporary file...');
-    
-    // Create a temporary directory
-    const tempDirId = crypto.randomBytes(8).toString('hex');
-    const tempDir = path.join(os.tmpdir(), `solc-compile-${tempDirId}`);
-    fs.ensureDirSync(tempDir);
-    
-    // Create a temporary file for the contract
-    const contractFile = path.join(tempDir, `${contractName}.sol`);
-    fs.writeFileSync(contractFile, source);
-    
-    // Track created files and directories
-    const createdPaths = [contractFile, tempDir];
-    createdPaths.forEach(p => createdResources.add(p));
-    
+  fs.ensureDirSync(tempDir);
+
+  // Copy remappings.txt to temp directory if it exists
+  const projectRemappingsPath = path.join(__dirname, '..', 'remappings.txt');
+  if (fs.existsSync(projectRemappingsPath)) {
+    fs.copyFileSync(projectRemappingsPath, path.join(tempDir, 'remappings.txt'));
+  }
+
+  // Try each method in sequence
+  for (const method of methods) {
     try {
-      const result = compileSolidityWithSolc(contractFile, contractName, compilerVersion, settings);
+      console.log(`Trying compilation method: ${method.name}`);
+      const result = await method.fn();
       
-      // Clean up created files and directories
-      if (config.CLEANUP_TEMP_FILES) {
-        cleanupCreatedFiles(createdPaths);
-      }
+      // Cache the successful result
+      cacheCompilationResult(source, compilerVersion, compilationSettings, result);
       
       return result;
-    } catch (directError) {
-      // Clean up created files and directories
-      if (config.CLEANUP_TEMP_FILES) {
-        cleanupCreatedFiles(createdPaths);
-      }
-      console.warn('Direct compilation failed:', directError.message);
-      errors.push({ method: 'direct', error: directError.message });
-      throw directError;
+    } catch (error) {
+      console.error(`Method ${method.name} failed:`, error.message);
+      errors.push({
+        method: method.name,
+        error: error.message
+      });
     }
-  } catch (tempFileError) {
-    console.warn('Temporary file compilation failed:', tempFileError.message);
-    errors.push({ method: 'temp-file', error: tempFileError.message });
   }
-  
-  // If all previous methods failed, try with Docker directly
-  try {
-    console.log('Attempting compilation with Docker directly...');
-    
-    // Create a temporary directory
-    const tempDirId = crypto.randomBytes(8).toString('hex');
-    const tempDir = path.join(os.tmpdir(), `solc-docker-${tempDirId}`);
-    fs.ensureDirSync(tempDir);
-    
-    // Create contract file
-    const contractFile = path.join(tempDir, `${contractName}.sol`);
-    fs.writeFileSync(contractFile, source);
-    
-    // Create input file for standard JSON
-    const inputJson = {
-      language: "Solidity",
-      sources: {
-        [`${contractName}.sol`]: {
-          content: source
-        }
-      },
-      settings: {
-        outputSelection: {
-          "*": {
-            "*": ["abi", "evm.bytecode.object", "evm.deployedBytecode.object", "metadata"]
-          }
-        },
-        optimizer: settings.optimizer || {
-          enabled: true,
-          runs: 200
-        },
-        evmVersion: settings.evmVersion || "paris"
-      }
-    };
-    
-    const inputFile = path.join(tempDir, 'input.json');
-    fs.writeFileSync(inputFile, JSON.stringify(inputJson));
-    
-    // Track created resources
-    const createdPaths = [contractFile, inputFile, tempDir];
-    createdPaths.forEach(p => createdResources.add(p));
-    
-    try {
-      // Try both version formats for the Docker image
-      let dockerOutput;
-      
-      try {
-        dockerOutput = execSync(`docker run --rm -v "${tempDir}:/workdir" ethereum/solc:${compilerVersion} --standard-json /workdir/input.json`, {
-          encoding: 'utf8',
-          timeout: config.DOCKER_TIMEOUT_MS
-        });
-      } catch (noPrefix) {
-        dockerOutput = execSync(`docker run --rm -v "${tempDir}:/workdir" ethereum/solc:v${compilerVersion} --standard-json /workdir/input.json`, {
-          encoding: 'utf8',
-          timeout: config.DOCKER_TIMEOUT_MS
-        });
-      }
-      
-      // Parse the output
-      const compiledOutput = JSON.parse(dockerOutput);
-      
-      // Check for errors
-      if (compiledOutput.errors && compiledOutput.errors.some(e => e.severity === 'error')) {
-        const errors = compiledOutput.errors
-          .filter(e => e.severity === 'error')
-          .map(e => e.formattedMessage || e.message)
-          .join('\n');
-        
-        // Clean up before throwing
-        if (config.CLEANUP_TEMP_FILES) {
-          cleanupCreatedFiles(createdPaths);
-        }
-        throw new Error(`Docker compilation errors: ${errors}`);
-      }
-      
-      // Find the contract in the output
-      if (!compiledOutput.contracts || 
-          !compiledOutput.contracts[`${contractName}.sol`] || 
-          !compiledOutput.contracts[`${contractName}.sol`][contractName]) {
-        
-        // Clean up before throwing
-        if (config.CLEANUP_TEMP_FILES) {
-          cleanupCreatedFiles(createdPaths);
-        }
-        throw new Error(`Contract ${contractName} not found in Docker compilation output`);
-      }
-      
-      const contract = compiledOutput.contracts[`${contractName}.sol`][contractName];
-      
-      // Create the result object
-      const result = {
-        bytecode: contract.evm.bytecode.object,
-        deployedBytecode: contract.evm.deployedBytecode.object,
-        abi: contract.abi,
-        metadata: contract.metadata
-      };
-      
-      // Cache the result
-      cacheCompilationResult(source, compilerVersion, settings, result);
-      
-      // Clean up created resources
-      if (config.CLEANUP_TEMP_FILES) {
-        cleanupCreatedFiles(createdPaths);
-      }
-      
-      return result;
-    } catch (dockerDirectError) {
-      // Clean up created resources
-      if (config.CLEANUP_TEMP_FILES) {
-        cleanupCreatedFiles(createdPaths);
-      }
-      console.warn('Direct Docker compilation failed:', dockerDirectError.message);
-      errors.push({ method: 'docker-direct', error: dockerDirectError.message });
-    }
-  } catch (dockerTempError) {
-    console.warn('Docker temporary compilation failed:', dockerTempError.message);
-    errors.push({ method: 'docker-temp', error: dockerTempError.message });
-  }
-  
+
   // If we get here, all methods failed
-  throw new Error(`All compilation methods failed: ${JSON.stringify(errors)}`);
+  throw new Error(`Compilation failed: All compilation methods failed: ${JSON.stringify(errors)}`);
 }
 
 /**
@@ -1014,5 +945,7 @@ module.exports = {
   createCompilationError,
   parseSolcError,
   logErrorDetails,
-  safeExecuteCommand
+  safeExecuteCommand,
+  getEVMVersionForSolidity,
+  EVM_VERSION_MAP
 };

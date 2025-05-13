@@ -1,0 +1,14 @@
+@openzeppelin/contracts=lib/openzeppelin-contracts/contracts
+@openzeppelin/contracts-upgradeable=lib/openzeppelin-contracts-upgradeable/contracts
+solmate/=lib/solmate/src/
+solady/=lib/solady/src/
+forge-std/=lib/forge-std/src/
+@uniswap/v2-core=lib/v2-core/contracts
+@uniswap/v2-periphery=lib/v2-periphery/contracts
+@uniswap/v3-core=lib/v3-core/contracts
+@uniswap/v3-periphery=lib/v3-periphery/contracts
+@uniswap/lib=lib/solidity-lib/contracts
+@aave/core-v3=lib/aave-v3-core/contracts
+@aave/periphery-v3=lib/aave-v3-periphery/contracts
+@compound-finance/contracts=lib/compound-protocol/contracts
+@chainlink/contracts=lib/chainlink/contracts
