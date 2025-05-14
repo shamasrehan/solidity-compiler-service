@@ -1,6 +1,7 @@
 /**
  * Install Dependencies Script
  * Runs during npm install to pre-install common Solidity dependencies
+ * Updated to support version-in-path import pattern: @openzeppelin/contracts@4.9.5/token/ERC20/ERC20.sol
  */
 
 const { spawn } = require('child_process');
@@ -120,7 +121,7 @@ async function installDependencies() {
   // Install each dependency
   for (const dep of allDependencies) {
     try {
-      await installDependency(dep.github, dep.version, dep.alias);
+      await installDependency(dep.github, dep.version, dep.alias, dep.versionSuffix);
       console.log(`✓ Installed ${dep.name} (${dep.github}@${dep.version})`);
     } catch (error) {
       console.error(`× Failed to install ${dep.name} (${dep.github}@${dep.version}): ${error.message}`);
@@ -133,9 +134,10 @@ async function installDependencies() {
  * @param {string} repo - GitHub repository
  * @param {string} version - Version to install
  * @param {string} alias - Alias for the dependency
+ * @param {string} versionSuffix - Version suffix for remappings
  * @returns {Promise<void>}
  */
-function installDependency(repo, version, alias) {
+function installDependency(repo, version, alias, versionSuffix) {
   return new Promise((resolve, reject) => {
     // If alias directory already exists, skip
     const aliasPath = path.resolve(process.cwd(), 'lib', alias || repo.split('/')[1]);
@@ -167,6 +169,12 @@ function installDependency(repo, version, alias) {
     
     command.on('close', code => {
       if (code === 0) {
+        // After successful installation, update remappings.txt to include version-in-path style
+        if (repo === 'OpenZeppelin/openzeppelin-contracts' && versionSuffix) {
+          addVersionPathRemapping(alias || repo.split('/')[1], versionSuffix);
+        } else if (repo === 'OpenZeppelin/openzeppelin-contracts-upgradeable' && versionSuffix) {
+          addVersionPathRemapping(alias || repo.split('/')[1], versionSuffix, true);
+        }
         resolve();
       } else {
         reject(new Error(`Forge install failed with code ${code}: ${stderr}`));
@@ -177,4 +185,36 @@ function installDependency(repo, version, alias) {
       reject(new Error(`Failed to run forge install: ${error.message}`));
     });
   });
+}
+
+/**
+ * Add version-in-path style remappings to remappings.txt
+ * @param {string} folderName - Library folder name
+ * @param {string} versionSuffix - Version suffix for remapping
+ * @param {boolean} isUpgradeable - Whether this is for upgradeable contracts
+ */
+function addVersionPathRemapping(folderName, versionSuffix, isUpgradeable = false) {
+  const remappingsPath = path.resolve(process.cwd(), 'remappings.txt');
+  
+  // Skip if remappings.txt doesn't exist
+  if (!fs.existsSync(remappingsPath)) {
+    return;
+  }
+  
+  try {
+    let remappings = fs.readFileSync(remappingsPath, 'utf8').split('\n');
+    
+    // Create new version-in-path style remapping
+    const packageName = isUpgradeable ? 'contracts-upgradeable' : 'contracts';
+    const newRemapping = `@openzeppelin/${packageName}@${versionSuffix}/=lib/${folderName}/contracts/`;
+    
+    // Add the remapping if it doesn't already exist
+    if (!remappings.includes(newRemapping)) {
+      remappings.push(newRemapping);
+      fs.writeFileSync(remappingsPath, remappings.join('\n'));
+      console.log(`Added version-in-path remapping: ${newRemapping}`);
+    }
+  } catch (error) {
+    console.error(`Error updating remappings.txt: ${error.message}`);
+  }
 }

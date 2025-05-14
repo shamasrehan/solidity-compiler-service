@@ -3,7 +3,7 @@
 /**
  * Pre-install Dependencies Script
  * Manually installs common Solidity dependencies without relying on forge install
- * Updated to accommodate multiple OpenZeppelin versions
+ * Updated to support version-in-path import pattern: @openzeppelin/contracts@4.9.5/token/ERC20/ERC20.sol
  */
 
 const fs = require('fs-extra');
@@ -86,14 +86,16 @@ OZ_VERSIONS.forEach(ozVersion => {
     name: `OpenZeppelin Contracts ${ozVersion.version}`,
     repo: 'OpenZeppelin/openzeppelin-contracts',
     version: ozVersion.version,
-    folderName: `openzeppelin-contracts-${ozVersion.folderSuffix}`
+    folderName: `openzeppelin-contracts-${ozVersion.folderSuffix}`,
+    versionSuffix: ozVersion.folderSuffix
   });
   
   DEPENDENCIES.push({
     name: `OpenZeppelin Upgradeable Contracts ${ozVersion.version}`,
     repo: 'OpenZeppelin/openzeppelin-contracts-upgradeable',
     version: ozVersion.version,
-    folderName: `openzeppelin-contracts-upgradeable-${ozVersion.folderSuffix}`
+    folderName: `openzeppelin-contracts-upgradeable-${ozVersion.folderSuffix}`,
+    versionSuffix: ozVersion.folderSuffix
   });
 });
 
@@ -158,31 +160,37 @@ async function processDependencies() {
       // Create remappings for each dependency
       if (dep.repo === 'OpenZeppelin/openzeppelin-contracts') {
         // Extract version info from folder name for remapping
-        const versionSuffix = dep.folderName.replace('openzeppelin-contracts-', '');
+        const versionSuffix = dep.versionSuffix;
         
-        // Create version-specific remappings
+        // Create traditional version-specific remappings
         remappings.push(`@openzeppelin-${versionSuffix}/=lib/${dep.folderName}/`);
         remappings.push(`@openzeppelin-${versionSuffix}/contracts/=lib/${dep.folderName}/contracts/`);
         
-        // If this is v4.9.5 (default version), also add the standard remappings
-        // if (dep.version === 'v4.9.5') {
-        //   remappings.push(`@openzeppelin/=lib/${dep.folderName}/`);
-        //   remappings.push(`@openzeppelin/contracts/=lib/${dep.folderName}/contracts/`);
-        // }
+        // Create new version-in-path style remappings (e.g. @openzeppelin/contracts@4.9.5/)
+        remappings.push(`@openzeppelin/contracts@${versionSuffix}/=lib/${dep.folderName}/contracts/`);
+        
+        // If this is v4.9.5 (default version), also add the standard remappings without version
+        if (dep.version === 'v4.9.5') {
+          remappings.push(`@openzeppelin/=lib/${dep.folderName}/`);
+          remappings.push(`@openzeppelin/contracts/=lib/${dep.folderName}/contracts/`);
+        }
       } 
       else if (dep.repo === 'OpenZeppelin/openzeppelin-contracts-upgradeable') {
         // Extract version info from folder name for remapping
-        const versionSuffix = dep.folderName.replace('openzeppelin-contracts-upgradeable-', '');
+        const versionSuffix = dep.versionSuffix;
         
-        // Create version-specific remappings
+        // Create traditional version-specific remappings
         remappings.push(`@openzeppelin-upgradeable-${versionSuffix}/=lib/${dep.folderName}/`);
         remappings.push(`@openzeppelin-upgradeable-${versionSuffix}/contracts/=lib/${dep.folderName}/contracts/`);
         
+        // Create new version-in-path style remappings
+        remappings.push(`@openzeppelin/contracts-upgradeable@${versionSuffix}/=lib/${dep.folderName}/contracts/`);
+        
         // If this is v4.9.5 (default version), also add the standard remappings
-        // if (dep.version === 'v4.9.5') {
-        //   remappings.push(`@openzeppelin-upgradeable/=lib/${dep.folderName}/`);
-        //   remappings.push(`@openzeppelin/contracts-upgradeable/=lib/${dep.folderName}/contracts/`);
-        // }
+        if (dep.version === 'v4.9.5') {
+          remappings.push(`@openzeppelin-upgradeable/=lib/${dep.folderName}/`);
+          remappings.push(`@openzeppelin/contracts-upgradeable/=lib/${dep.folderName}/contracts/`);
+        }
       }
       else {
         // Process non-OpenZeppelin dependencies
@@ -285,13 +293,12 @@ remappings = [
   console.log('# Default OpenZeppelin contracts (v4.9.5):');
   console.log('import "@openzeppelin/contracts/token/ERC20/ERC20.sol";');
   console.log('import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";');
-  console.log('\n# Specific OpenZeppelin versions:');
+  console.log('\n# Version-specific imports (new style):');
+  console.log('import "@openzeppelin/contracts@4.9.5/token/ERC20/ERC20.sol";');
+  console.log('import "@openzeppelin/contracts@4.9.4/token/ERC20/ERC20.sol";');
+  console.log('import "@openzeppelin/contracts-upgradeable@4.9.5/proxy/utils/Initializable.sol";');
+  console.log('\n# Version-specific imports (old style):');
   console.log('import "@openzeppelin-4.9.4/contracts/token/ERC20/ERC20.sol";');
-  console.log('import "@openzeppelin-4.9.3/contracts/token/ERC20/ERC20.sol";');
-  console.log('import "@openzeppelin-4.9.2/contracts/token/ERC20/ERC20.sol";');
-  console.log('import "@openzeppelin-4.9.1/contracts/token/ERC20/ERC20.sol";');
-  console.log('import "@openzeppelin-4.9.0/contracts/token/ERC20/ERC20.sol";');
-  console.log('import "@openzeppelin-4.8.3/contracts/token/ERC20/ERC20.sol";');
   console.log('import "@openzeppelin-upgradeable-4.8.3/contracts/proxy/utils/Initializable.sol";');
   console.log('\n# Other dependencies:');
   console.log('import "@uniswap/v2-periphery/contracts/interfaces/IUniswapV2Router02.sol";');

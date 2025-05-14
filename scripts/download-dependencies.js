@@ -3,7 +3,7 @@
 /**
  * Manual Dependency Downloader
  * Downloads dependencies using direct HTTP requests instead of Git
- * Use this if you're having issues with Git-based installation
+ * Updated to support version-in-path import pattern: @openzeppelin/contracts@4.9.5/token/ERC20/ERC20.sol
  */
 
 const fs = require('fs-extra');
@@ -12,13 +12,28 @@ const https = require('https');
 const { createWriteStream } = require('fs');
 const { Extract } = require('unzipper');
 
-// Dependencies to download
+// Dependencies to download with versions
 const DEPENDENCIES = [
   {
-    name: 'OpenZeppelin Contracts',
+    name: 'OpenZeppelin Contracts 4.9.5',
+    url: 'https://github.com/OpenZeppelin/openzeppelin-contracts/archive/refs/tags/v4.9.5.zip',
+    extractDir: 'openzeppelin-contracts-4.9.5',
+    targetDir: 'openzeppelin-contracts-4.9.5',
+    versionSuffix: '4.9.5'
+  },
+  {
+    name: 'OpenZeppelin Contracts 4.9.3',
     url: 'https://github.com/OpenZeppelin/openzeppelin-contracts/archive/refs/tags/v4.9.3.zip',
     extractDir: 'openzeppelin-contracts-4.9.3',
-    targetDir: 'openzeppelin-contracts'
+    targetDir: 'openzeppelin-contracts-4.9.3',
+    versionSuffix: '4.9.3'
+  },
+  {
+    name: 'OpenZeppelin Contracts Upgradeable 4.9.5',
+    url: 'https://github.com/OpenZeppelin/openzeppelin-contracts-upgradeable/archive/refs/tags/v4.9.5.zip',
+    extractDir: 'openzeppelin-contracts-upgradeable-4.9.5',
+    targetDir: 'openzeppelin-contracts-upgradeable-4.9.5',
+    versionSuffix: '4.9.5'
   },
   {
     name: 'Solmate',
@@ -123,10 +138,39 @@ async function processDependencies() {
         
         console.log(`✅ Installed ${dep.name} to ${targetPath}`);
         
-        // Create remappings
-        if (dep.name === 'OpenZeppelin Contracts') {
-          remappings.push(`@openzeppelin/=lib/${dep.targetDir}/`);
-          remappings.push(`@openzeppelin/contracts/=lib/${dep.targetDir}/contracts/`);
+        // Create remappings based on the dependency type
+        if (dep.name.includes('OpenZeppelin Contracts') && !dep.name.includes('Upgradeable')) {
+          // For OpenZeppelin Contracts
+          if (dep.versionSuffix) {
+            // Traditional version-specific remappings
+            remappings.push(`@openzeppelin-${dep.versionSuffix}/=lib/${dep.targetDir}/`);
+            remappings.push(`@openzeppelin-${dep.versionSuffix}/contracts/=lib/${dep.targetDir}/contracts/`);
+            
+            // New version-in-path style remappings
+            remappings.push(`@openzeppelin/contracts@${dep.versionSuffix}/=lib/${dep.targetDir}/contracts/`);
+            
+            // If this is the latest version (4.9.5), also add without version
+            if (dep.versionSuffix === '4.9.5') {
+              remappings.push(`@openzeppelin/=lib/${dep.targetDir}/`);
+              remappings.push(`@openzeppelin/contracts/=lib/${dep.targetDir}/contracts/`);
+            }
+          }
+        } else if (dep.name.includes('OpenZeppelin Contracts Upgradeable')) {
+          // For OpenZeppelin Contracts Upgradeable
+          if (dep.versionSuffix) {
+            // Traditional version-specific remappings
+            remappings.push(`@openzeppelin-upgradeable-${dep.versionSuffix}/=lib/${dep.targetDir}/`);
+            remappings.push(`@openzeppelin-upgradeable-${dep.versionSuffix}/contracts/=lib/${dep.targetDir}/contracts/`);
+            
+            // New version-in-path style remappings
+            remappings.push(`@openzeppelin/contracts-upgradeable@${dep.versionSuffix}/=lib/${dep.targetDir}/contracts/`);
+            
+            // If this is the latest version (4.9.5), also add without version
+            if (dep.versionSuffix === '4.9.5') {
+              remappings.push(`@openzeppelin-upgradeable/=lib/${dep.targetDir}/`);
+              remappings.push(`@openzeppelin/contracts-upgradeable/=lib/${dep.targetDir}/contracts/`);
+            }
+          }
         } else if (dep.name === 'Solmate') {
           remappings.push(`solmate/=lib/${dep.targetDir}/src/`);
         }
@@ -138,7 +182,7 @@ async function processDependencies() {
           console.log(`Creating stub for ${dep.name}...`);
           await fs.ensureDir(targetPath);
           
-          if (dep.name === 'OpenZeppelin Contracts') {
+          if (dep.name.includes('OpenZeppelin Contracts') && !dep.name.includes('Upgradeable')) {
             await fs.ensureDir(path.join(targetPath, 'contracts', 'token', 'ERC20'));
             await fs.writeFile(
               path.join(targetPath, 'contracts', 'token', 'ERC20', 'ERC20.sol'),
@@ -167,6 +211,27 @@ contract ERC20 {
     
     function decimals() public view virtual returns (uint8) {
         return 18;
+    }
+}
+`
+            );
+          } else if (dep.name.includes('OpenZeppelin Contracts Upgradeable')) {
+            await fs.ensureDir(path.join(targetPath, 'contracts', 'proxy', 'utils'));
+            await fs.writeFile(
+              path.join(targetPath, 'contracts', 'proxy', 'utils', 'Initializable.sol'),
+              `// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+/**
+ * @dev Stub Initializable implementation
+ */
+abstract contract Initializable {
+    bool private _initialized;
+    
+    modifier initializer() {
+        require(!_initialized, "Initializable: contract is already initialized");
+        _initialized = true;
+        _;
     }
 }
 `
@@ -209,7 +274,12 @@ remappings = [
     
     console.log('\n🎉 Dependencies installed successfully!');
     console.log('You can now use imports like:');
+    console.log('# Default style:');
     console.log('import "@openzeppelin/contracts/token/ERC20/ERC20.sol";');
+    console.log('# Version-in-path style:');
+    console.log('import "@openzeppelin/contracts@4.9.5/token/ERC20/ERC20.sol";');
+    console.log('import "@openzeppelin/contracts@4.9.3/token/ERC20/ERC20.sol";');
+    console.log('import "@openzeppelin/contracts-upgradeable@4.9.5/proxy/utils/Initializable.sol";');
     
   } catch (error) {
     console.error(`❌ Fatal error: ${error.message}`);

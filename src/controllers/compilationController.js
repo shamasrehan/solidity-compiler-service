@@ -1,12 +1,13 @@
 /**
- * Compilation Controller
- * Handles API routes for smart contract compilation
+ * Updated Compilation Controller
+ * Added new endpoint for listing dependencies
  */
 
 const express = require('express');
 const router = express.Router();
 const logger = require('../utils/logger');
 const compilationService = require('../services/compilationService');
+const dependencyService = require('../services/dependencyService');
 const { getCompilationValidationRules, validate } = require('../utils/validators');
 
 /**
@@ -304,6 +305,72 @@ router.post('/debug', getCompilationValidationRules(), validate, async (req, res
 });
 
 /**
+ * @route GET /api/v1/compile/dependencies
+ * @description List all installed dependencies with their import paths
+ * @access Public
+ */
+router.get('/dependencies', async (req, res, next) => {
+  try {
+    logger.info('Received request to list dependencies');
+    
+    // Get dependencies from the service
+    const dependencies = await dependencyService.listInstalledDependencies();
+    
+    // Add formatted examples if requested
+    if (req.query.examples === 'true') {
+      dependencies.dependencies = dependencies.dependencies.map(dep => {
+        // Add formatted example imports for each dependency
+        dep.exampleImports = [];
+        
+        // Get the first format if available
+        if (dep.importFormats && dep.importFormats.length > 0) {
+          const format = dep.importFormats[0];
+          if (format.examples && format.examples.length > 0) {
+            dep.exampleImports = format.examples.map(example => 
+              `import "${example}";`
+            );
+          }
+        }
+        
+        return dep;
+      });
+    }
+    
+    // Filter out specific properties if requested
+    if (req.query.format === 'simple') {
+      dependencies.dependencies = dependencies.dependencies.map(dep => ({
+        name: dep.name,
+        type: dep.type,
+        subtype: dep.subtype,
+        version: dep.version,
+        importFormats: dep.importFormats.map(format => format.importPrefix)
+      }));
+    }
+    
+    // Filter by type if requested
+    if (req.query.type) {
+      const filterType = req.query.type.toLowerCase();
+      dependencies.dependencies = dependencies.dependencies.filter(
+        dep => dep.type.toLowerCase() === filterType
+      );
+      dependencies.count = dependencies.dependencies.length;
+    }
+    
+    return res.status(200).json({
+      success: true,
+      ...dependencies
+    });
+  } catch (error) {
+    logger.error('Error listing dependencies:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Error retrieving dependencies',
+      error: error.message
+    });
+  }
+});
+
+/**
  * @route GET /api/v1/compile/status
  * @description Get the status of the compilation service
  * @access Public
@@ -326,12 +393,22 @@ router.get('/status', async (req, res) => {
       };
     }
     
+    // Get dependency count
+    let dependencyCount = 0;
+    try {
+      const dependencies = await dependencyService.listInstalledDependencies();
+      dependencyCount = dependencies.count || 0;
+    } catch (error) {
+      logger.warn('Error counting dependencies:', error);
+    }
+    
     return res.status(200).json({
       success: true,
       status: 'Compilation service is running',
       defaultSolidityVersion: config.foundry.defaultSolidityVersion,
       defaultEvmVersion: config.foundry.defaultEvmVersion,
-      maxConcurrentCompilations: config.limits.maxConcurrentCompilations
+      maxConcurrentCompilations: config.limits.maxConcurrentCompilations,
+      installedDependencies: dependencyCount
     });
   } catch (error) {
     return res.status(500).json({
