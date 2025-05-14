@@ -3,6 +3,7 @@
 /**
  * Pre-install Dependencies Script
  * Manually installs common Solidity dependencies without relying on forge install
+ * Updated to accommodate multiple OpenZeppelin versions
  */
 
 const fs = require('fs-extra');
@@ -11,19 +12,27 @@ const { execSync, exec } = require('child_process');
 const { promisify } = require('util');
 const execPromise = promisify(exec);
 
-const DEPENDENCIES = [
-  {
-    name: 'OpenZeppelin Contracts',
-    repo: 'OpenZeppelin/openzeppelin-contracts',
-    version: 'v4.9.3',
-    folderName: 'openzeppelin-contracts'
-  },
-  {
-    name: 'OpenZeppelin Upgradeable Contracts',
-    repo: 'OpenZeppelin/openzeppelin-contracts-upgradeable',
-    version: 'v4.9.3',
-    folderName: 'openzeppelin-contracts-upgradeable'
-  },
+// OpenZeppelin versions array - these are the most commonly used stable versions
+const OZ_VERSIONS = [
+  { version: 'v4.9.5', folderSuffix: '4.9.5' },  // Latest 4.9.x 
+  { version: 'v4.9.4', folderSuffix: '4.9.4' },  // 4.9.4
+  { version: 'v4.9.3', folderSuffix: '4.9.3' },  // 4.9.3
+  { version: 'v4.9.2', folderSuffix: '4.9.2' },  // 4.9.2
+  { version: 'v4.9.1', folderSuffix: '4.9.1' },  // 4.9.1
+  { version: 'v4.9.0', folderSuffix: '4.9.0' },  // 4.9.0
+  { version: 'v4.8.3', folderSuffix: '4.8.3' },  // Latest 4.8.x
+  { version: 'v4.7.3', folderSuffix: '4.7.3' },  // Latest 4.7.x
+  { version: 'v4.6.0', folderSuffix: '4.6.0' },  // Latest 4.6.x
+  { version: 'v4.5.0', folderSuffix: '4.5.0' },  // Latest 4.5.x
+  { version: 'v4.4.2', folderSuffix: '4.4.2' },  // Latest 4.4.x
+  { version: 'v4.3.3', folderSuffix: '4.3.3' },  // Latest 4.3.x
+  { version: 'v4.2.0', folderSuffix: '4.2.0' },  // Latest 4.2.x
+  { version: 'v4.1.0', folderSuffix: '4.1.0' },  // Latest 4.1.x
+  { version: 'v4.0.0', folderSuffix: '4.0.0' },  // First 4.x release
+];
+
+// Create base dependencies list - we'll expand the OZ entries later
+const BASE_DEPENDENCIES = [
   {
     name: 'Solmate',
     repo: 'transmissions11/solmate',
@@ -68,7 +77,28 @@ const DEPENDENCIES = [
   }
 ];
 
+// Now expand with all OpenZeppelin versions
+const DEPENDENCIES = [...BASE_DEPENDENCIES];
+
+// Add all OpenZeppelin contracts versions
+OZ_VERSIONS.forEach(ozVersion => {
+  DEPENDENCIES.push({
+    name: `OpenZeppelin Contracts ${ozVersion.version}`,
+    repo: 'OpenZeppelin/openzeppelin-contracts',
+    version: ozVersion.version,
+    folderName: `openzeppelin-contracts-${ozVersion.folderSuffix}`
+  });
+  
+  DEPENDENCIES.push({
+    name: `OpenZeppelin Upgradeable Contracts ${ozVersion.version}`,
+    repo: 'OpenZeppelin/openzeppelin-contracts-upgradeable',
+    version: ozVersion.version,
+    folderName: `openzeppelin-contracts-upgradeable-${ozVersion.folderSuffix}`
+  });
+});
+
 console.log('📦 Pre-installing dependencies manually...');
+console.log(`🔍 Will install ${OZ_VERSIONS.length} versions of OpenZeppelin contracts`);
 
 // Create lib directory if it doesn't exist
 const libDir = path.join(process.cwd(), 'lib');
@@ -125,38 +155,61 @@ async function processDependencies() {
         }
       }
       
-      // Create remappings
-      switch(dep.repo) {
-        case 'OpenZeppelin/openzeppelin-contracts':
-          remappings.push(`@openzeppelin/=lib/${dep.folderName}/`);
-          remappings.push(`@openzeppelin/contracts/=lib/${dep.folderName}/contracts/`);
-          break;
-        case 'OpenZeppelin/openzeppelin-contracts-upgradeable':
-          remappings.push(`@openzeppelin-upgradeable/=lib/${dep.folderName}/`);
-          remappings.push(`@openzeppelin/contracts-upgradeable/=lib/${dep.folderName}/contracts/`);
-          break;
-        case 'transmissions11/solmate':
-          remappings.push(`solmate/=lib/${dep.folderName}/src/`);
-          break;
-        case 'Uniswap/v2-core':
-          remappings.push(`@uniswap/v2-core/=lib/${dep.folderName}/`);
-          break;
-        case 'Uniswap/v2-periphery':
-          remappings.push(`@uniswap/v2-periphery/=lib/${dep.folderName}/`);
-          break;
-        case 'Uniswap/v3-core':
-          remappings.push(`@uniswap/v3-core/=lib/${dep.folderName}/`);
-          break;
-        case 'Uniswap/v3-periphery':
-          remappings.push(`@uniswap/v3-periphery/=lib/${dep.folderName}/`);
-          break;
-        case 'aave/protocol-v2':
-          remappings.push(`@aave/protocol-v2/=lib/${dep.folderName}/`);
-          break;
-        case 'smartcontractkit/chainlink':
-          remappings.push(`@chainlink/=lib/${dep.folderName}/contracts/`);
-          remappings.push(`@chainlink/contracts/=lib/${dep.folderName}/contracts/src/`);
-          break;
+      // Create remappings for each dependency
+      if (dep.repo === 'OpenZeppelin/openzeppelin-contracts') {
+        // Extract version info from folder name for remapping
+        const versionSuffix = dep.folderName.replace('openzeppelin-contracts-', '');
+        
+        // Create version-specific remappings
+        remappings.push(`@openzeppelin-${versionSuffix}/=lib/${dep.folderName}/`);
+        remappings.push(`@openzeppelin-${versionSuffix}/contracts/=lib/${dep.folderName}/contracts/`);
+        
+        // If this is v4.9.5 (default version), also add the standard remappings
+        // if (dep.version === 'v4.9.5') {
+        //   remappings.push(`@openzeppelin/=lib/${dep.folderName}/`);
+        //   remappings.push(`@openzeppelin/contracts/=lib/${dep.folderName}/contracts/`);
+        // }
+      } 
+      else if (dep.repo === 'OpenZeppelin/openzeppelin-contracts-upgradeable') {
+        // Extract version info from folder name for remapping
+        const versionSuffix = dep.folderName.replace('openzeppelin-contracts-upgradeable-', '');
+        
+        // Create version-specific remappings
+        remappings.push(`@openzeppelin-upgradeable-${versionSuffix}/=lib/${dep.folderName}/`);
+        remappings.push(`@openzeppelin-upgradeable-${versionSuffix}/contracts/=lib/${dep.folderName}/contracts/`);
+        
+        // If this is v4.9.5 (default version), also add the standard remappings
+        // if (dep.version === 'v4.9.5') {
+        //   remappings.push(`@openzeppelin-upgradeable/=lib/${dep.folderName}/`);
+        //   remappings.push(`@openzeppelin/contracts-upgradeable/=lib/${dep.folderName}/contracts/`);
+        // }
+      }
+      else {
+        // Process non-OpenZeppelin dependencies
+        switch(dep.repo) {
+          case 'transmissions11/solmate':
+            remappings.push(`solmate/=lib/${dep.folderName}/src/`);
+            break;
+          case 'Uniswap/v2-core':
+            remappings.push(`@uniswap/v2-core/=lib/${dep.folderName}/`);
+            break;
+          case 'Uniswap/v2-periphery':
+            remappings.push(`@uniswap/v2-periphery/=lib/${dep.folderName}/`);
+            break;
+          case 'Uniswap/v3-core':
+            remappings.push(`@uniswap/v3-core/=lib/${dep.folderName}/`);
+            break;
+          case 'Uniswap/v3-periphery':
+            remappings.push(`@uniswap/v3-periphery/=lib/${dep.folderName}/`);
+            break;
+          case 'aave/protocol-v2':
+            remappings.push(`@aave/protocol-v2/=lib/${dep.folderName}/`);
+            break;
+          case 'smartcontractkit/chainlink':
+            remappings.push(`@chainlink/=lib/${dep.folderName}/contracts/`);
+            remappings.push(`@chainlink/contracts/=lib/${dep.folderName}/contracts/src/`);
+            break;
+        }
       }
       
     } catch (error) {
@@ -228,9 +281,19 @@ remappings = [
   }
   
   console.log('\n📦 Dependencies setup completed!');
-  console.log('You can now use imports like:');
+  console.log('\nYou can now use imports like:');
+  console.log('# Default OpenZeppelin contracts (v4.9.5):');
   console.log('import "@openzeppelin/contracts/token/ERC20/ERC20.sol";');
   console.log('import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";');
+  console.log('\n# Specific OpenZeppelin versions:');
+  console.log('import "@openzeppelin-4.9.4/contracts/token/ERC20/ERC20.sol";');
+  console.log('import "@openzeppelin-4.9.3/contracts/token/ERC20/ERC20.sol";');
+  console.log('import "@openzeppelin-4.9.2/contracts/token/ERC20/ERC20.sol";');
+  console.log('import "@openzeppelin-4.9.1/contracts/token/ERC20/ERC20.sol";');
+  console.log('import "@openzeppelin-4.9.0/contracts/token/ERC20/ERC20.sol";');
+  console.log('import "@openzeppelin-4.8.3/contracts/token/ERC20/ERC20.sol";');
+  console.log('import "@openzeppelin-upgradeable-4.8.3/contracts/proxy/utils/Initializable.sol";');
+  console.log('\n# Other dependencies:');
   console.log('import "@uniswap/v2-periphery/contracts/interfaces/IUniswapV2Router02.sol";');
   console.log('import "@uniswap/v3-core/contracts/interfaces/IUniswapV3Pool.sol";');
   console.log('import "@aave/protocol-v2/contracts/interfaces/ILendingPool.sol";');
