@@ -165,6 +165,12 @@ async function compileContract(projectPath, options = {}) {
  * @returns {Promise<boolean>} True if installation succeeded
  */
 async function installDependency(projectPath, repo, version = 'main') {
+  // Validate input parameters
+  if (!repo) {
+    logger.error('Failed to install dependency: Repository name is undefined or empty');
+    return false;
+  }
+
   logger.info(`Installing dependency: ${repo}@${version} in ${projectPath}`);
   
   try {
@@ -194,13 +200,41 @@ async function installDependency(projectPath, repo, version = 'main') {
  * @returns {Array<string>} Array of import paths
  */
 function extractImports(contractCode) {
+  if (!contractCode || typeof contractCode !== 'string') {
+    logger.warn('Invalid contract code provided to extractImports');
+    return [];
+  }
+  
   // Match different types of import statements in Solidity
   const importRegex = /import\s+(?:{[^}]*}|"[^"]*"|'[^']*'|[^;]*)\s*(?:from\s+)?["']([^"']+)["'];/g;
   const matches = [];
   let match;
   
-  while ((match = importRegex.exec(contractCode)) !== null) {
-    matches.push(match[1]);
+  try {
+    while ((match = importRegex.exec(contractCode)) !== null) {
+      if (match[1]) {
+        matches.push(match[1]);
+      }
+    }
+  } catch (error) {
+    logger.error(`Error extracting imports: ${error.message}`);
+  }
+  
+  // If no imports found with regex, try a simpler approach
+  if (matches.length === 0) {
+    logger.debug('No imports found with regex. Trying simple approach...');
+    
+    // Split by lines and look for import statements
+    const lines = contractCode.split('\n');
+    for (const line of lines) {
+      if (line.trim().startsWith('import ')) {
+        // Extract path between quotes
+        const quotedContent = line.match(/["']([^"']+)["']/);
+        if (quotedContent && quotedContent[1]) {
+          matches.push(quotedContent[1]);
+        }
+      }
+    }
   }
   
   logger.debug(`Extracted ${matches.length} imports:`, matches);

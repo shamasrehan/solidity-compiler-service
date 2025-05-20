@@ -67,18 +67,44 @@ async function setupFoundryProject(dirPath) {
     await fs.ensureDir(path.join(dirPath, 'lib'));
     await fs.ensureDir(path.join(dirPath, 'out'));
     
-    // Create a minimal foundry.toml
+    // Create remappings for both standard and versioned imports
+    const remappings = [
+      // Standard imports
+      "@openzeppelin/=lib/openzeppelin-contracts-4.9.5/",
+      "@openzeppelin/contracts/=lib/openzeppelin-contracts-4.9.5/contracts/",
+      
+      // Versioned imports - explicit mappings for each version
+      "@openzeppelin/contracts@4.9.5/=lib/openzeppelin-contracts-4.9.5/contracts/",
+      "@openzeppelin/contracts@4.9.3/=lib/openzeppelin-contracts-4.9.3/contracts/",
+      "@openzeppelin/contracts@4.8.0/=lib/openzeppelin-contracts-4.8.0/contracts/",
+      "@openzeppelin/contracts@4.7.0/=lib/openzeppelin-contracts-4.7.0/contracts/",
+      "@openzeppelin/contracts@4.6.0/=lib/openzeppelin-contracts-4.6.0/contracts/",
+      "@openzeppelin/contracts@4.5.0/=lib/openzeppelin-contracts-4.5.0/contracts/",
+      "@openzeppelin/contracts@4.4.2/=lib/openzeppelin-contracts-4.4.2/contracts/",
+      "@openzeppelin/contracts@4.3.3/=lib/openzeppelin-contracts-4.3.3/contracts/",
+      "@openzeppelin/contracts@4.2.0/=lib/openzeppelin-contracts-4.2.0/contracts/",
+      "@openzeppelin/contracts@4.1.0/=lib/openzeppelin-contracts-4.1.0/contracts/",
+      "@openzeppelin/contracts@4.0.0/=lib/openzeppelin-contracts-4.0.0/contracts/",
+    ];
+    
+    // Create foundry.toml with remappings
     const foundryConfig = `
 [profile.default]
 src = 'src'
 out = 'out'
 libs = ['lib']
-remappings = []
+remappings = [
+  ${remappings.map(r => `"${r}"`).join(',\n  ')}
+]
 
 [rpc_endpoints]
     `;
     
     await fs.writeFile(path.join(dirPath, 'foundry.toml'), foundryConfig);
+    
+    // Create remappings.txt
+    await fs.writeFile(path.join(dirPath, 'remappings.txt'), remappings.join('\n'));
+    
     logger.debug(`Set up Foundry project structure at: ${dirPath}`);
   } catch (error) {
     logger.error(`Failed to setup Foundry project: ${error.message}`);

@@ -10,7 +10,7 @@ const path = require('path');
 module.exports = {
   // Server configuration
   server: {
-    port: parseInt(process.env.PORT || '3000', 10),
+    port: parseInt(process.env.PORT || '3002', 10),
     environment: process.env.NODE_ENV || 'development',
   },
   

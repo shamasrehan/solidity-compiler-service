@@ -2,12 +2,14 @@
 
 /**
  * Setup script to help users get started with the Smart Contract Compiler API
+ * Updated to use the improved dependency management system
  */
 
 const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
 const readline = require('readline');
+const { checkFoundryInstallation, findForgePath } = require('./utils/installUtils');
 
 // Create readline interface
 let rl;
@@ -46,22 +48,23 @@ checkFoundryInstallation()
       console.log('  1. Run: curl -L https://foundry.paradigm.xyz | bash');
       console.log('  2. Then run: foundryup');
       console.log('  3. Restart this setup script after installing Foundry');
-      process.exit(1);
+      console.log('\nAlternatively, we can continue without Foundry and use HTTP-based dependencies.');
+      
+      return promptForContinueWithoutFoundry();
     }
     
     console.log('\n✅ Foundry is installed');
-    return findForgePath();
-  })
-  .then(forgePath => {
-    if (forgePath) {
-      console.log(`\n✅ Found forge binary at: ${forgePath}`);
-      console.log(`   Will use FOUNDRY_BIN_PATH=${path.dirname(forgePath)}`);
-    } else {
-      console.log('\n⚠️ Could not locate forge binary automatically.');
-      console.log('   You will need to specify the path manually.');
-    }
-    
-    return promptForConfiguration(forgePath ? path.dirname(forgePath) : null);
+    return findForgePath().then(forgePath => {
+      if (forgePath) {
+        console.log(`\n✅ Found forge binary at: ${forgePath}`);
+        console.log(`   Will use FOUNDRY_BIN_PATH=${path.dirname(forgePath)}`);
+        return promptForConfiguration(path.dirname(forgePath));
+      } else {
+        console.log('\n⚠️ Could not locate forge binary automatically.');
+        console.log('   You will need to specify the path manually.');
+        return promptForConfiguration(null);
+      }
+    });
   })
   .then(config => {
     return createEnvFile(config);
@@ -76,19 +79,7 @@ checkFoundryInstallation()
     
     console.log('\n✅ Dependencies installed');
     
-    console.log('\nPre-installing Solidity dependencies...');
-    return new Promise((resolve, reject) => {
-      const preinstallDeps = spawnSync('node', ['preinstall-dependencies.js'], { stdio: 'inherit' });
-      
-      if (preinstallDeps.status !== 0) {
-        console.warn('\n⚠️ Warning: Failed to pre-install Solidity dependencies.');
-        console.warn('   You may need to run: npm run preinstall-deps');
-        resolve();
-      } else {
-        console.log('\n✅ Solidity dependencies pre-installed');
-        resolve();
-      }
-    });
+    return installSolidityDependencies();
   })
   .then(() => {
     console.log('\n🎉 Setup complete! You can now start the server:');
@@ -107,65 +98,21 @@ checkFoundryInstallation()
   });
 
 /**
- * Check if Foundry is installed
- * @returns {Promise<boolean>} True if installed
+ * Prompt user if they want to continue without Foundry
+ * @returns {Promise<boolean>} True if continue, false if not
  */
-async function checkFoundryInstallation() {
-  return new Promise(resolve => {
-    const forgeCmd = process.platform === 'win32' ? 'forge.exe' : 'forge';
-    const result = spawnSync(forgeCmd, ['--version'], { shell: true });
-    resolve(result.status === 0);
+function promptForContinueWithoutFoundry() {
+  return new Promise((resolve) => {
+    rl.question('Continue without Foundry? (y/N): ', (answer) => {
+      if (answer.toLowerCase() === 'y') {
+        console.log('\nContinuing without Foundry, will use HTTP-based dependencies...');
+        resolve(promptForConfiguration(null));
+      } else {
+        console.log('Please install Foundry and restart the setup script.');
+        process.exit(0);
+      }
+    });
   });
-}
-
-/**
- * Find the forge binary path
- * @returns {Promise<string|null>} Path to forge binary or null if not found
- */
-async function findForgePath() {
-  const isWindows = process.platform === 'win32';
-  const forgeCmd = isWindows ? 'forge.exe' : 'forge';
-  
-  // Try to locate forge binary using 'which' or 'where' command
-  try {
-    const result = spawnSync(isWindows ? 'where' : 'which', ['forge'], { shell: true });
-    if (result.status === 0) {
-      const forgePathFromEnv = result.stdout.toString().trim().split('\n')[0];
-      if (forgePathFromEnv && fs.existsSync(forgePathFromEnv)) {
-        return forgePathFromEnv;
-      }
-    }
-  } catch (error) {
-    // Command failed, continue with other methods
-  }
-  
-  // Common installation paths to check
-  const possiblePaths = [
-    path.join(require('os').homedir(), '.foundry', 'bin', forgeCmd),
-    path.join(require('os').homedir(), '.cargo', 'bin', forgeCmd),
-    '/usr/local/bin/forge',
-    '/usr/bin/forge',
-  ];
-  
-  // Add Windows-specific paths
-  if (isWindows) {
-    possiblePaths.push(
-      path.join(process.env.USERPROFILE, '.foundry', 'bin', forgeCmd)
-    );
-  }
-  
-  // Check each path
-  for (const forgePath of possiblePaths) {
-    try {
-      if (fs.existsSync(forgePath)) {
-        return forgePath;
-      }
-    } catch (error) {
-      // Ignore errors checking paths
-    }
-  }
-  
-  return null;
 }
 
 /**
@@ -271,162 +218,36 @@ LOG_LEVEL=${config.logLevel}
     }
   });
 }
-#!/usr/bin/env node
 
 /**
- * Setup script to help users get started with the Smart Contract Compiler API
- */
-
-const fs = require('fs');
-const path = require('path');
-const { spawnSync } = require('child_process');
-const readline = require('readline');
-
-const rl = readline.createInterface({
-  input: process.stdin,
-  output: process.stdout
-});
-
-console.log('Smart Contract Compiler API - Setup Script');
-console.log('=========================================');
-console.log('This script will help you set up the API service.');
-
-// Check if Foundry is installed
-checkFoundryInstallation()
-  .then(foundryInstalled => {
-    if (!foundryInstalled) {
-      console.log('\n❌ Foundry is not installed!');
-      console.log('Please install Foundry before continuing:');
-      console.log('  1. Run: curl -L https://foundry.paradigm.xyz | bash');
-      console.log('  2. Then run: foundryup');
-      console.log('  3. Restart this setup script after installing Foundry');
-      process.exit(1);
-    }
-    
-    console.log('\n✅ Foundry is installed');
-    return promptForConfiguration();
-  })
-  .then(config => {
-    return createEnvFile(config);
-  })
-  .then(() => {
-    console.log('\nInstalling dependencies...');
-    const npmInstall = spawnSync('npm', ['install'], { stdio: 'inherit' });
-    
-    if (npmInstall.status !== 0) {
-      throw new Error('Failed to install dependencies');
-    }
-    
-    console.log('\n✅ Dependencies installed');
-    console.log('\n🎉 Setup complete! You can now start the server:');
-    console.log('   npm start');
-    
-    rl.close();
-  })
-  .catch(error => {
-    console.error(`\n❌ Setup failed: ${error.message}`);
-    rl.close();
-    process.exit(1);
-  });
-
-/**
- * Check if Foundry is installed
- * @returns {Promise<boolean>} True if installed
- */
-async function checkFoundryInstallation() {
-  return new Promise(resolve => {
-    const forgeCmd = process.platform === 'win32' ? 'forge.exe' : 'forge';
-    const result = spawnSync(forgeCmd, ['--version'], { shell: true });
-    resolve(result.status === 0);
-  });
-}
-
-/**
- * Prompt user for configuration options
- * @returns {Promise<Object>} Configuration object
- */
-async function promptForConfiguration() {
-  return new Promise(resolve => {
-    const defaultConfig = {
-      port: 3000,
-      solidityVersion: '0.8.20',
-      evmVersion: 'paris',
-      maxConcurrentCompilations: 10,
-      logLevel: 'info'
-    };
-    
-    console.log('\nPlease configure the service (press Enter to use defaults):');
-    
-    rl.question(`Port number [${defaultConfig.port}]: `, port => {
-      defaultConfig.port = port || defaultConfig.port;
-      
-      rl.question(`Default Solidity version [${defaultConfig.solidityVersion}]: `, solidityVersion => {
-        defaultConfig.solidityVersion = solidityVersion || defaultConfig.solidityVersion;
-        
-        rl.question(`Default EVM version [${defaultConfig.evmVersion}]: `, evmVersion => {
-          defaultConfig.evmVersion = evmVersion || defaultConfig.evmVersion;
-          
-          rl.question(`Max concurrent compilations [${defaultConfig.maxConcurrentCompilations}]: `, maxConcurrentCompilations => {
-            defaultConfig.maxConcurrentCompilations = maxConcurrentCompilations || defaultConfig.maxConcurrentCompilations;
-            
-            rl.question(`Log level (debug, info, warn, error) [${defaultConfig.logLevel}]: `, logLevel => {
-              defaultConfig.logLevel = logLevel || defaultConfig.logLevel;
-              
-              console.log('\nConfiguration:');
-              console.log(JSON.stringify(defaultConfig, null, 2));
-              
-              rl.question('Is this configuration correct? (Y/n): ', answer => {
-                if (answer.toLowerCase() === 'n') {
-                  console.log('Please restart the setup script to reconfigure.');
-                  process.exit(0);
-                }
-                
-                resolve(defaultConfig);
-              });
-            });
-          });
-        });
-      });
-    });
-  });
-}
-
-/**
- * Create .env file with configuration
- * @param {Object} config - Configuration object
+ * Install Solidity dependencies
  * @returns {Promise<void>}
  */
-async function createEnvFile(config) {
-  return new Promise((resolve, reject) => {
-    try {
-      const envContent = `# Server Configuration
-PORT=${config.port}
-NODE_ENV=development
-
-# Foundry Configuration
-FOUNDRY_BIN_PATH=/usr/local/bin
-DEFAULT_SOLIDITY_VERSION=${config.solidityVersion}
-DEFAULT_EVM_VERSION=${config.evmVersion}
-TEMP_DIR=./tmp
-COMPILATION_TIMEOUT=60000
-
-# Dependencies Configuration
-PRE_INSTALLED=true
-LIB_PATH=./lib
-
-# API Limitations
-MAX_CONCURRENT_COMPILATIONS=${config.maxConcurrentCompilations}
-MAX_CONTRACT_SIZE=500000
-
-# Logging Configuration
-LOG_LEVEL=${config.logLevel}
-`;
-      
-      fs.writeFileSync(path.join(process.cwd(), '.env'), envContent);
-      console.log('\n✅ Created .env file with your configuration');
-      resolve();
-    } catch (error) {
-      reject(error);
-    }
+async function installSolidityDependencies() {
+  console.log('\nInstalling Solidity dependencies...');
+  
+  // Use our preinstall-dependencies.js script
+  const preinstallDeps = spawnSync('node', ['scripts/preinstall-dependencies.js'], { 
+    stdio: 'inherit',
+    shell: true
   });
+  
+  if (preinstallDeps.status !== 0) {
+    console.warn('\n⚠️ Warning: Preinstall dependencies script encountered issues.');
+    console.warn('   Trying fallback HTTP method...');
+    
+    const downloadDeps = spawnSync('node', ['scripts/download-dependencies.js'], {
+      stdio: 'inherit',
+      shell: true
+    });
+    
+    if (downloadDeps.status !== 0) {
+      console.warn('\n⚠️ Warning: Failed to install Solidity dependencies.');
+      console.warn('   You may need to run: npm run preinstall-deps');
+      return Promise.resolve();
+    }
+  }
+  
+  console.log('\n✅ Solidity dependencies installed');
+  return Promise.resolve();
 }

@@ -6,7 +6,7 @@
     "scripts": {
       "start": "node src/server.js",
       "dev": "nodemon src/server.js",
-      "setup": "node setup.js",
+      "setup": "node scripts/setup.js",
       "setup:simple": "node setup-simple.js",
       "locate-foundry": "node locate-foundry.js",
       "preinstall-deps": "node scripts/preinstall-dependencies.js",

@@ -20,3 +20,15 @@
 	path = lib/chainlink
 	url = https://github.com/smartcontractkit/chainlink
 	branch = develop
+[submodule "lib/v3-core"]
+	path = lib/v3-core
+	url = https://github.com/Uniswap/v3-core
+	branch = main
+[submodule "lib/v3-periphery"]
+	path = lib/v3-periphery
+	url = https://github.com/Uniswap/v3-periphery
+	branch = main
+[submodule "lib/protocol-v2"]
+	path = lib/protocol-v2
+	url = https://github.com/aave/protocol-v2
+	branch = master

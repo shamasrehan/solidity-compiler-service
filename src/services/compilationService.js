@@ -73,37 +73,163 @@ function queueCompilation(compileFn) {
 /**
  * Copy pre-installed libraries to temp directory
  * @param {string} tempDir - Temporary directory path
- * @returns {Promise<void>}
+ * @returns {Promise<boolean>} True if libraries were successfully copied
  */
 async function copyPreInstalledLibraries(tempDir) {
   try {
-    const libPath = path.resolve(process.cwd(), 'lib');
+    // First, check if the lib directory exists in the project root
+    const rootLibPath = path.resolve(process.cwd(), 'lib');
     const tempLibPath = path.join(tempDir, 'lib');
     
-    // Check if lib directory exists in project
-    if (await fs.pathExists(libPath)) {
+    logger.info(`Checking for libraries in: ${rootLibPath}`);
+    
+    if (await fs.pathExists(rootLibPath)) {
+      // Log what's in the lib directory
+      const libContents = await fs.readdir(rootLibPath);
+      logger.info(`Found ${libContents.length} items in lib directory: ${libContents.join(', ')}`);
+      
+      // Specifically check for openzeppelin-contracts
+      const hasOpenZeppelin = libContents.some(item => 
+        item === 'openzeppelin-contracts' || 
+        item.startsWith('openzeppelin-contracts-')
+      );
+      
+      if (hasOpenZeppelin) {
+        logger.info(`OpenZeppelin contracts found in lib directory`);
+      } else {
+        logger.warn(`OpenZeppelin contracts NOT found in lib directory`);
+      }
+      
       // Create lib directory in temp dir
       await fs.ensureDir(tempLibPath);
       
-      // Copy libraries
-      await fs.copy(libPath, tempLibPath);
-      logger.info(`Copied pre-installed libraries to temporary directory`);
+      // Copy libraries with detailed logging
+      logger.info(`Copying libraries from ${rootLibPath} to ${tempLibPath}`);
+      await fs.copy(rootLibPath, tempLibPath);
+      
+      // Verify the copy worked by checking the temp lib directory
+      if (await fs.pathExists(tempLibPath)) {
+        const tempLibContents = await fs.readdir(tempLibPath);
+        logger.info(`After copy: ${tempLibContents.length} items in temp lib directory: ${tempLibContents.join(', ')}`);
+        
+        // Double-check OpenZeppelin contracts
+        const hasOpenZeppelinInTemp = tempLibContents.some(item => 
+          item === 'openzeppelin-contracts' || 
+          item.startsWith('openzeppelin-contracts-')
+        );
+        
+        if (hasOpenZeppelinInTemp) {
+          logger.info(`✅ OpenZeppelin contracts successfully copied to temp directory`);
+        } else {
+          logger.warn(`❌ OpenZeppelin contracts NOT found in temp directory after copy`);
+        }
+      }
       
       // Copy remappings.txt if it exists
       const remappingsPath = path.resolve(process.cwd(), 'remappings.txt');
       if (await fs.pathExists(remappingsPath)) {
+        logger.info(`Copying remappings.txt from ${remappingsPath}`);
+        const remappingsContent = await fs.readFile(remappingsPath, 'utf8');
+        logger.info(`Remappings content: ${remappingsContent}`);
+        
         await fs.copy(remappingsPath, path.join(tempDir, 'remappings.txt'));
-        logger.info(`Copied remappings.txt to temporary directory`);
+        logger.info(`✅ Copied remappings.txt to temporary directory`);
+        
+        // Verify remappings were copied correctly
+        const tempRemappingsPath = path.join(tempDir, 'remappings.txt');
+        if (await fs.pathExists(tempRemappingsPath)) {
+          const tempRemappingsContent = await fs.readFile(tempRemappingsPath, 'utf8');
+          logger.info(`Temp remappings content: ${tempRemappingsContent}`);
+        }
+      } else {
+        logger.warn(`remappings.txt not found at ${remappingsPath}`);
       }
       
       return true;
     } else {
-      logger.info('No pre-installed libraries found to copy');
+      logger.warn(`No lib directory found at ${rootLibPath}`);
       return false;
     }
   } catch (error) {
-    logger.error(`Error copying pre-installed libraries: ${error.message}`);
+    logger.error(`Error copying pre-installed libraries: ${error.message}`, error);
     return false;
+  }
+}
+
+/**
+ * Diagnose dependency issues
+ * @param {string} tempDir - Temporary directory path
+ * @param {string} contractCode - Contract source code
+ * @returns {Promise<Object>} Diagnosis results
+ */
+async function diagnoseDependencies(tempDir, contractCode) {
+  const results = {
+    imports: [],
+    librariesFound: [],
+    structureValid: false,
+    remappingsValid: false,
+    remappings: [],
+    foundryTomlValid: false,
+    issues: []
+  };
+  
+  try {
+    // 1. Extract imports from contract
+    results.imports = foundryService.extractImports(contractCode);
+    logger.info(`Contract imports: ${results.imports.join(', ')}`);
+    
+    // 2. Check if lib directory exists and what's in it
+    const libPath = path.join(tempDir, 'lib');
+    if (await fs.pathExists(libPath)) {
+      results.librariesFound = await fs.readdir(libPath);
+      logger.info(`Libraries found: ${results.librariesFound.join(', ')}`);
+    } else {
+      results.issues.push('Lib directory not found');
+    }
+    
+    // 3. Verify library structure
+    const structureResult = await dependencyService.verifyLibraryStructure(libPath);
+    results.structureValid = structureResult.isValid;
+    results.issues.push(...structureResult.issues);
+    
+    // 4. Check remappings.txt
+    const remappingsPath = path.join(tempDir, 'remappings.txt');
+    if (await fs.pathExists(remappingsPath)) {
+      const remappingsContent = await fs.readFile(remappingsPath, 'utf8');
+      results.remappings = remappingsContent.split('\n').filter(line => line.trim() !== '');
+      logger.info(`Remappings found: ${results.remappings.join(', ')}`);
+      
+      // Check if OpenZeppelin remappings exist
+      results.remappingsValid = results.remappings.some(r => 
+        r.includes('@openzeppelin/contracts/') || 
+        r.includes('@openzeppelin/=')
+      );
+      
+      if (!results.remappingsValid) {
+        results.issues.push('No OpenZeppelin remappings found');
+      }
+    } else {
+      results.issues.push('remappings.txt not found');
+    }
+    
+    // 5. Check foundry.toml
+    const foundryTomlPath = path.join(tempDir, 'foundry.toml');
+    if (await fs.pathExists(foundryTomlPath)) {
+      const foundryContent = await fs.readFile(foundryTomlPath, 'utf8');
+      results.foundryTomlValid = foundryContent.includes('@openzeppelin/contracts/');
+      
+      if (!results.foundryTomlValid) {
+        results.issues.push('No OpenZeppelin remappings in foundry.toml');
+      }
+    } else {
+      results.issues.push('foundry.toml not found');
+    }
+    
+    return results;
+  } catch (error) {
+    logger.error(`Error in dependency diagnosis: ${error.message}`);
+    results.issues.push(`Diagnosis error: ${error.message}`);
+    return results;
   }
 }
 
@@ -138,15 +264,40 @@ async function compileContract(options) {
       // Set up Foundry project structure
       await fileSystem.setupFoundryProject(tempDir);
       
-      // Copy pre-installed libraries to temp directory
-      await copyPreInstalledLibraries(tempDir);
-      
       // Create contract file
       const contractPath = await fileSystem.createContractFile(
         path.join(tempDir, 'src'),
         contractCode,
         `${contractName}.sol`
       );
+      
+      // Check if contract uses OpenZeppelin
+      const usesOpenZeppelin = contractCode.includes('@openzeppelin/contracts/');
+      
+      if (usesOpenZeppelin) {
+        logger.info('Contract uses OpenZeppelin. Setting up dependencies...');
+        
+        // First try to copy pre-installed libraries
+        const librariesCopied = await copyPreInstalledLibraries(tempDir);
+        
+        if (!librariesCopied) {
+          logger.info('Pre-installed libraries not copied. Installing directly...');
+          
+          // Try direct installation as fallback
+          await dependencyService.installMinimalOpenZeppelinDependencies(tempDir);
+        }
+        
+        // Process remappings
+        await dependencyService.processRemappings(tempDir);
+        
+        // Run diagnosis to verify setup
+        const diagnosisResult = await diagnoseDependencies(tempDir, contractCode);
+        logger.info('Dependency diagnosis after setup:', diagnosisResult);
+        
+        if (diagnosisResult.issues.length > 0) {
+          logger.warn(`Still have ${diagnosisResult.issues.length} dependency issues after setup.`);
+        }
+      }
       
       // Pre-install common dependencies if enabled
       if (config.dependencies.preInstalled) {
